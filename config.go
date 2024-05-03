@@ -12,41 +12,36 @@ import (
 )
 
 const (
-	// etl转换成xml的文件名
-	AnalyticalFileName = "dns-analytical.xml"
 	// 配置名称
-	ConfigName = "dns-analytical.yml"
-	// 转换工具命令
-	TracerptExe = "tracerpt.exe"
-	// powershell命令
-	Powershell = "powershell.exe"
-
-	// 记录上一次同步最新的日志时间
-	SysLogLastTime = "syslog-last-time.txt"
-	// 记录上一次同步最新的日志时间
-	FTPLastTime = "ftp-last-time.txt"
+	ConfigName = "win-logtail.yml"
 	// 备份日志路径
 	ArchiveLogPath = "archiveLog"
-	// 备份日志名称
-	ArchiveLog = "archive-dns-analytical.log"
-
 	// 日志文件
-	AnalyticalLog = "win-dns-analytical.log"
-	// dns查询日志的时间格式
-	WindowSystemLayout = "2006-01-02T15:04:05.000000000"
+	AnalyticalLog = "win-logtail.log"
 )
 
 type Config struct {
 	// 安装路径
 	InstallationPath string `yaml:"-"`
-	// dns analytical日志文件
-	AnalyticalPath string `yaml:"analytical_path"`
-	// 监控周期(秒)
-	Period int64 `yaml:"period"`
+	// analytical类型文件
+	AnalyticalEntries []Entry `yaml:"analytical_entries"`
+	// audit类型文件
+	AuditEntries []Entry `yaml:"audit_entries"`
 	// syslog服务器配置
 	SysLog SysLogConfig `yaml:"syslog"`
 	// ftp服务器
 	FTP FTPConfig `yaml:"ftp"`
+}
+
+type Entry struct {
+	//  文件路径
+	Path string `yaml:"path"`
+	// 文件拷贝间隔
+	Internal int64 `yaml:"internal"`
+	// 日志登记
+	Level string `yaml:"level"`
+	// 事件ID范围
+	EventID string `yaml:"event_id"`
 }
 
 type SysLogConfig struct {
@@ -83,10 +78,6 @@ type FTPConfig struct {
 
 func (c *Config) init() {
 	installationPath := getCurrentAbPath()
-	// 周期默认为30s
-	if c.Period <= 0 {
-		c.Period = 30
-	}
 
 	if c.FTP.Enable {
 		_ = os.MkdirAll(filepath.Join(installationPath, ArchiveLogPath), 0666)
@@ -96,7 +87,7 @@ func (c *Config) init() {
 		}
 	}
 
-	InitLogger(filepath.Join(installationPath, ArchiveLog), logrus.InfoLevel.String(), false, false)
+	InitLogger(filepath.Join(installationPath, AnalyticalLog), logrus.InfoLevel.String(), false, false)
 }
 
 func LoadConfig(filename string) (*Config, error) {

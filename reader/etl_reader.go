@@ -1,0 +1,366 @@
+package reader
+
+import (
+	"bytes"
+	"crypto/md5"
+	"encoding/hex"
+	"encoding/xml"
+	"fmt"
+	"github.com/panjf2000/ants/v2"
+	"windns-logtail/checkpoint"
+
+	"github.com/elastic/beats/winlogbeat/eventlog"
+	"github.com/pkg/errors"
+	"github.com/robfig/cron/v3"
+	"github.com/sirupsen/logrus"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	// 转换工具命令
+	TracerptExe = "tracerpt.exe"
+	// powershell命令
+	Powershell = "powershell.exe"
+	// dns查询日志的时间格式
+	WindowSystemLayout = "2006-01-02T15:04:05.000000000"
+)
+
+type ETL struct {
+	logPath string
+	pwd     string
+	maxRead int
+
+	xmlLogfiles     chan string
+	etlLogfiles     chan string
+	records         chan []eventlog.Record
+	stopReadXML     chan struct{}
+	stopTransferETL chan struct{}
+
+	sortFiles []string
+
+	state checkpoint.EventLogState
+	point *checkpoint.Checkpoint
+	pool  *ants.Pool
+}
+
+func NewETLWorker(pwd, logPath string, state checkpoint.EventLogState) (*ETL, error) {
+	pool, err := ants.NewPool(2, ants.WithPreAlloc(true))
+	if err != nil {
+		return nil, err
+	}
+	reader := &ETL{
+		logPath:         logPath,
+		pwd:             pwd,
+		xmlLogfiles:     make(chan string, 100),
+		etlLogfiles:     make(chan string, 100),
+		stopReadXML:     make(chan struct{}, 1),
+		stopTransferETL: make(chan struct{}, 1),
+		records:         make(chan []eventlog.Record, 500),
+		state:           state,
+		pool:            pool,
+	}
+
+	return reader, nil
+}
+
+func (w *ETL) SetCron(cron *cron.Cron, internal int64) error {
+	_, err := cron.AddJob(fmt.Sprintf("@every %ds", internal), w)
+	return err
+}
+
+func (w *ETL) SetMaxRead(maxRead int) {
+	w.maxRead = maxRead
+}
+
+func (w *ETL) Run() {
+	if len(w.etlLogfiles) > 10 || len(w.xmlLogfiles) > 10 {
+		logrus.Warnf("logfiles too much, skip")
+		return
+	}
+
+	// 日志文件存放在logs目录下
+	logPath := filepath.Join(w.pwd, "logs")
+	_, err := os.Stat(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err = os.Mkdir(logPath, 0600); err != nil {
+				logrus.Errorln("Mkdir log path err: ", err.Error())
+				return
+			}
+		} else {
+			logrus.Errorln("Mkdir log path err: ", err.Error())
+			return
+		}
+	}
+	etlLogfile := filepath.Join(logPath, fmt.Sprintf("%d%s", time.Now().Unix(), filepath.Base(w.logPath)))
+	// 先将文件转移
+	if err := powershell(fmt.Sprintf("Copy-Item %s %s", w.logPath, etlLogfile)); err != nil {
+		logrus.Errorf("Copy log file err: \n", err.Error())
+		return
+	}
+	// 先将文件转移
+	//if err := copyFile(w.logPath, etlLogfile); err != nil {
+	//	logrus.Errorln("Copy log file err: ", err.Error())
+	//	return
+	//}
+	w.etlLogfiles <- etlLogfile
+}
+
+func (w *ETL) Init() error {
+	if err := w.loadFiles(); err != nil {
+		return err
+	}
+
+	go w.transferETL()
+
+	go w.scanXML()
+
+	return nil
+}
+
+// 拷贝文件到指定目录
+func copyFile(src, dest string) error {
+	startTime := time.Now()
+	// 打开源文件
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %v", err)
+	}
+	defer srcFile.Close()
+
+	// 创建目标文件
+	destFile, err := os.Create(dest)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %v", err)
+	}
+	defer destFile.Close()
+
+	// 拷贝文件内容
+	_, err = io.Copy(destFile, srcFile)
+	if err != nil {
+		return fmt.Errorf("failed to copy file: %v", err)
+	}
+	logrus.Infof("copy %s cost:%ds", src, int64(time.Now().Sub(startTime).Seconds()))
+
+	return nil
+}
+
+func powershell(cmd string) error {
+	var (
+		stdout bytes.Buffer
+		stderr bytes.Buffer
+	)
+	command := exec.Command(Powershell, cmd)
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+
+	if err := command.Run(); err != nil {
+		logrus.Errorf("exec %s err: %s", cmd, err.Error())
+		return err
+	}
+	if stderr.String() != "" {
+		logrus.Errorf("exec %s err: %s", cmd, stderr.String())
+		return errors.New(stderr.String())
+	}
+
+	return nil
+}
+
+func (w *ETL) GetRecords() chan []eventlog.Record {
+	return w.records
+}
+
+func (w *ETL) SetPoint(point *checkpoint.Checkpoint) {
+	w.point = point
+}
+
+func (w *ETL) transferETL() {
+	for {
+		select {
+		case etlLogfile := <-w.etlLogfiles:
+			w.sortFiles = append(w.sortFiles, etlLogfile)
+			w.pool.Submit(func(etlLogfile string) func() {
+				return func() {
+					// 处理完了需要删除文件
+					defer os.RemoveAll(etlLogfile)
+					// 在对文件进行转换
+					xmlLogfile := strings.Replace(etlLogfile, ".etl", ".xml", -1)
+					startTime := time.Now()
+					// tracerpt.exe Microsoft-Windows-DNSServer%4Analytical2.etl  -of EVTX -o dns_analytical.evtx -y
+					if err := powershell(fmt.Sprintf(`%s %s -of XML -o %s -y`, TracerptExe, etlLogfile, xmlLogfile)); err != nil {
+						logrus.Errorf("transfer %s err: %s", etlLogfile, err.Error())
+					}
+
+					logrus.Infof("transfer %s cost:%ds", etlLogfile, int64(time.Now().Sub(startTime).Seconds()))
+
+					// 保持日志顺序不变进入channel
+					for {
+						if len(w.sortFiles) > 1 && w.sortFiles[0] != etlLogfile {
+							time.Sleep(1 * time.Second)
+							continue
+						}
+						w.xmlLogfiles <- xmlLogfile
+						if len(w.sortFiles) > 1 {
+							w.sortFiles = w.sortFiles[1:]
+						} else {
+							w.sortFiles = []string{}
+						}
+						break
+					}
+				}
+			}(etlLogfile))
+		case <-w.stopTransferETL:
+			return
+		}
+	}
+}
+func (w *ETL) scanXML() {
+	var (
+		data        []byte
+		err         error
+		events      *Events
+		deltaEvents []eventlog.Record
+	)
+
+	for {
+		select {
+		case xmlLogfile := <-w.xmlLogfiles:
+			defer func() {
+				// 处理完了需要删除文件
+				if err := os.RemoveAll(xmlLogfile); err != nil {
+					logrus.Errorf("rm %s err: %s", xmlLogfile, err.Error())
+				}
+				logrus.Infof("finish read %s, delete it", xmlLogfile)
+			}()
+
+			logrus.Infof("start to read %s", xmlLogfile)
+			data, err = os.ReadFile(xmlLogfile)
+			if err != nil {
+				logrus.Errorf("read %s xml err: %s", xmlLogfile, err.Error())
+				continue
+			}
+			events = new(Events)
+			if err := xml.Unmarshal(data, &events); err != nil {
+				logrus.Errorf("unmarshal %s xml err: %s", xmlLogfile, err.Error())
+				continue
+			}
+			data = nil
+
+			// 按照最大的读取量进行拆分
+			for _, event := range events.EventLogs {
+				// 筛选出大于上次更新时的记录
+				if w.state.Timestamp.UnixNano() > event.TimeCreated.SystemTime.UnixNano() {
+					continue
+				} else if w.state.Timestamp.UnixNano() == event.TimeCreated.SystemTime.UnixNano() {
+					hash := md5.Sum([]byte(fmt.Sprintf("%+v", event)))
+					hashStr := hex.EncodeToString(hash[:])
+					if w.state.MD5 == hashStr {
+						continue
+					}
+				}
+
+				deltaEvents = append(deltaEvents, eventlog.Record{Event: event.Event})
+			}
+			// 按照最大的读取量进行拆分
+			logrus.Infof("total event is %d, add %d deltaEvents to channel", len(events.EventLogs), len(deltaEvents))
+			events = nil
+
+			// 循环读取并处理数组
+			startIndex := 0
+			for startIndex < len(deltaEvents) {
+				records, newIndex := readChunk(deltaEvents, w.maxRead, startIndex)
+				hash := md5.Sum([]byte(fmt.Sprintf("%+v", records[len(records)-1])))
+				hashStr := hex.EncodeToString(hash[:])
+				w.state = checkpoint.EventLogState{
+					Name:      w.logPath,
+					Timestamp: records[len(records)-1].TimeCreated.SystemTime,
+					MD5:       hashStr,
+				}
+				w.point.PersistState(w.state)
+				w.records <- records
+				// 更新起始索引
+				startIndex = newIndex
+			}
+			deltaEvents = nil
+		case <-w.stopReadXML:
+			return
+		}
+	}
+
+}
+
+func (w *ETL) Shutdown() {
+	w.pool.Release()
+	w.stopReadXML <- struct{}{}
+	w.stopTransferETL <- struct{}{}
+
+	close(w.etlLogfiles)
+	close(w.xmlLogfiles)
+	close(w.stopReadXML)
+	close(w.stopTransferETL)
+	close(w.records)
+}
+
+func (w *ETL) loadFiles() error {
+	files, err := listLogfile(filepath.Join(w.pwd, "logs"))
+	if err != nil {
+		logrus.Errorln(err.Error())
+		return err
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return i < j
+	})
+
+	for _, file := range files {
+		if strings.Contains(file, ".etl") {
+			w.etlLogfiles <- file
+		}
+		if strings.Contains(file, ".xml") {
+			w.xmlLogfiles <- file
+		}
+	}
+	return err
+}
+
+// 获取日志文件
+func listLogfile(dirPath string) ([]string, error) {
+	// 打开目录
+	dir, err := os.Open(dirPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("failed to open directory: %v", err)
+	}
+	defer dir.Close()
+
+	// 读取目录下的文件和子目录
+	fileInfos, err := dir.Readdir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read directory: %v", err)
+	}
+
+	var filenames []string
+	for _, file := range fileInfos {
+		if !file.IsDir() {
+			filenames = append(filenames, filepath.Join(dirPath, file.Name()))
+		}
+	}
+
+	return filenames, nil
+}
+
+func readChunk(arr []eventlog.Record, chunkSize int, startIndex int) ([]eventlog.Record, int) {
+	endIndex := startIndex + chunkSize
+	if endIndex > len(arr) {
+		endIndex = len(arr)
+	}
+	return arr[startIndex:endIndex], endIndex
+}
