@@ -46,12 +46,12 @@ func NewManager(pwd string) (*Manager, error) {
 }
 
 func (m *Manager) AddReader(reader Reader, maxRead, internal int64) error {
-	if err := reader.SetCron(m.cron, internal); err != nil {
-		return err
-	}
 	reader.SetMaxRead(int(maxRead))
 	reader.SetPoint(m.point)
 	if err := reader.Init(); err != nil {
+		return err
+	}
+	if err := reader.SetCron(m.cron, internal); err != nil {
 		return err
 	}
 	m.Readers = append(m.Readers, reader)

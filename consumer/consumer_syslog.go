@@ -64,6 +64,10 @@ func (s *Syslog) HandleEvents(events []eventlog.Record) error {
 	}
 	defer client.Close()
 
+	if len(events) == 0 {
+		return nil
+	}
+
 	startIndex := 0
 	var wg = &sync.WaitGroup{}
 	for startIndex < len(events) {

@@ -85,11 +85,9 @@ func (m *Manager) Start() error {
 					case <-m.stopChan[topic]:
 						break
 					case events := <-binder.events:
-
 						if err := binder.consume.HandleEvents(events); err != nil {
 							logrus.Errorln("handle events err: ", err.Error())
 						}
-
 					}
 				}
 			}

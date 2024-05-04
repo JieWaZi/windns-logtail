@@ -234,7 +234,7 @@ func (c *Checkpoint) flush() error {
 	sort.Strings(c.sort)
 
 	ps := PersistedState{
-		UpdateTime: time.Now().UTC(),
+		UpdateTime: time.Now().Local(),
 		States:     make([]EventLogState, len(c.sort)),
 	}
 	for i, name := range c.sort {

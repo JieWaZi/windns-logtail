@@ -23,17 +23,12 @@ const (
 	ReaderAPI        = "ReaderAPI"
 )
 
-type Channel struct {
+type winEventReader struct {
 	query       *wineventlog.Query // 查询条件
 	channelName string             // 通道或者文件名称
 	file        bool
 
-	internal int64 // 读取间隔
-	maxRead  int   // 单次最大条数
-
-	start   bool                   // 是否启动
-	lock    sync.RWMutex           // 读写锁
-	records chan []eventlog.Record // 读取到的事件
+	maxRead int // 单次最大条数
 
 	subscription wineventlog.EvtHandle    // 订阅的句柄
 	state        checkpoint.EventLogState // 上一次日志信息
@@ -46,31 +41,31 @@ type Channel struct {
 	stopIFEmpty bool // 未读到事件则停止
 }
 
-type ReaderOptions = func(*Channel)
+type ReaderOptions = func(*winEventReader)
 
 // WithLevel 指定获取日志级别，不指定level默认所有
 func WithLevel(level string) ReaderOptions {
-	return func(reader *Channel) {
+	return func(reader *winEventReader) {
 		reader.query.Level = level
 	}
 }
 
 // WithEventID 指定事件ID，不指定eventID默认所有，如果指定，格式为区间范围如1-4
 func WithEventID(eventID string) ReaderOptions {
-	return func(reader *Channel) {
+	return func(reader *winEventReader) {
 		reader.query.EventID = eventID
 	}
 }
 
 // WithStop 未获取到事件则退出读取
 func WithStop() ReaderOptions {
-	return func(reader *Channel) {
+	return func(reader *winEventReader) {
 		reader.stopIFEmpty = true
 	}
 }
 
 // NewChannelReader 创建结构体
-func NewChannelReader(name string, lastTime int64, options ...ReaderOptions) (*Channel, error) {
+func newWinEventReader(name string, lastTime int64, maxRead int, state checkpoint.EventLogState, options ...ReaderOptions) (*winEventReader, error) {
 	query := &wineventlog.Query{Log: name}
 	if lastTime != 0 {
 		query.IgnoreOlder = time.Duration(lastTime)
@@ -78,13 +73,14 @@ func NewChannelReader(name string, lastTime int64, options ...ReaderOptions) (*C
 	if filepath.IsAbs(name) {
 		name = filepath.Clean(name)
 	}
-	l := &Channel{
+	l := &winEventReader{
 		query:       query,
 		channelName: name,
 		file:        filepath.IsAbs(name),
-		records:     make(chan []eventlog.Record, 500),
 		renderBuf:   make([]byte, RenderBufferSize),
 		outputBuf:   sys.NewByteBuffer(RenderBufferSize),
+		state:       state,
+		maxRead:     maxRead,
 	}
 
 	for _, option := range options {
@@ -99,11 +95,11 @@ func NewChannelReader(name string, lastTime int64, options ...ReaderOptions) (*C
 }
 
 // Name 返回通道名称
-func (l *Channel) Name() string {
+func (l *winEventReader) Name() string {
 	return l.channelName
 }
 
-func (l *Channel) Open(state checkpoint.EventLogState) error {
+func (l *winEventReader) Open(state checkpoint.EventLogState) error {
 	var bookmark wineventlog.EvtHandle
 	var err error
 	if len(state.Bookmark) > 0 {
@@ -123,7 +119,7 @@ func (l *Channel) Open(state checkpoint.EventLogState) error {
 	return l.openChannel(bookmark)
 }
 
-func (l *Channel) openChannel(bookmark wineventlog.EvtHandle) error {
+func (l *winEventReader) openChannel(bookmark wineventlog.EvtHandle) error {
 	// Using a pull subscription to receive events. See:
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa385771(v=vs.85).aspx#pull
 	signalEvent, err := windows.CreateEvent(nil, 0, 0, nil)
@@ -153,20 +149,20 @@ func (l *Channel) openChannel(bookmark wineventlog.EvtHandle) error {
 	return nil
 }
 
-func (l *Channel) openFile(state checkpoint.EventLogState, bookmark wineventlog.EvtHandle) error {
+func (l *winEventReader) openFile(state checkpoint.EventLogState, bookmark wineventlog.EvtHandle) error {
 	path := l.channelName
 
-	filter, err := l.query.Build()
-	if err != nil {
-		return err
-	}
-	h, err := wineventlog.EvtQuery(0, path, filter, wineventlog.EvtQueryFilePath|wineventlog.EvtQueryReverseDirection)
+	//filter, err := l.query.Build()
+	//if err != nil {
+	//	return err
+	//}
+	h, err := wineventlog.EvtQuery(0, path, "", wineventlog.EvtQueryFilePath|wineventlog.EvtQueryForwardDirection)
 	if err != nil {
 		return errors.Wrapf(err, "failed to get handle to event log file %v", path)
 	}
 
 	if bookmark > 0 {
-		logrus.Infof("Seeking to bookmark. timestamp=%v bookmark=%v", state.Timestamp, state.Bookmark)
+		logrus.Debugf("Seeking to bookmark. timestamp=%v bookmark=%v", state.Timestamp, state.Bookmark)
 
 		// This seeks to the last read event and strictly validates that the
 		// bookmarked record number exists.
@@ -194,7 +190,7 @@ func (l *Channel) openFile(state checkpoint.EventLogState, bookmark wineventlog.
 	return nil
 }
 
-func (l *Channel) Read() ([]eventlog.Record, error) {
+func (l *winEventReader) Read() ([]eventlog.Record, error) {
 	handles, _, err := l.eventHandles(l.maxRead)
 	if err != nil || len(handles) == 0 {
 		return nil, err
@@ -231,23 +227,19 @@ func (l *Channel) Read() ([]eventlog.Record, error) {
 			logrus.Warnln("Failed creating bookmark: ", err)
 		}
 		records = append(records, r)
-		l.state = checkpoint.EventLogState{
-			Name:         l.channelName,
-			RecordNumber: r.RecordID,
-			Timestamp:    r.TimeCreated.SystemTime,
-		}
+		l.state.Bookmark = r.Offset.Bookmark
 	}
 
 	logrus.Debugf("Read() is returning %d records", len(records))
 	return records, nil
 }
 
-func (l *Channel) Close() error {
+func (l *winEventReader) Close() error {
 	logrus.Debugf("Closing handle")
 	return wineventlog.Close(l.subscription)
 }
 
-func (l *Channel) eventHandles(maxRead int) ([]wineventlog.EvtHandle, int, error) {
+func (l *winEventReader) eventHandles(maxRead int) ([]wineventlog.EvtHandle, int, error) {
 	handles, err := wineventlog.EventHandles(l.subscription, maxRead)
 	switch err {
 	case nil:
@@ -257,7 +249,6 @@ func (l *Channel) eventHandles(maxRead int) ([]wineventlog.EvtHandle, int, error
 		}
 		return handles, maxRead, nil
 	case wineventlog.ERROR_NO_MORE_ITEMS:
-		logrus.Infoln("no more events")
 		if l.stopIFEmpty {
 			return nil, maxRead, io.EOF
 		}
@@ -276,7 +267,7 @@ func (l *Channel) eventHandles(maxRead int) ([]wineventlog.EvtHandle, int, error
 	}
 }
 
-func (l *Channel) buildRecordFromXML(x []byte, recoveredErr error) (eventlog.Record, error) {
+func (l *winEventReader) buildRecordFromXML(x []byte, recoveredErr error) (eventlog.Record, error) {
 	e, err := sys.UnmarshalEventXML(x)
 	if err != nil {
 		e.RenderErr = append(e.RenderErr, err.Error())
@@ -310,7 +301,7 @@ func (l *Channel) buildRecordFromXML(x []byte, recoveredErr error) (eventlog.Rec
 	return r, nil
 }
 
-func (l *Channel) createBookmarkFromEvent(evtHandle wineventlog.EvtHandle) (string, error) {
+func (l *winEventReader) createBookmarkFromEvent(evtHandle wineventlog.EvtHandle) (string, error) {
 	bmHandle, err := wineventlog.CreateBookmarkFromEvent(evtHandle)
 	if err != nil {
 		return "", err
@@ -321,76 +312,123 @@ func (l *Channel) createBookmarkFromEvent(evtHandle wineventlog.EvtHandle) (stri
 	return string(l.outputBuf.Bytes()), err
 }
 
-func (l *Channel) SetCron(cron *cron.Cron, internal int64) error {
-	l.internal = internal
-	_, err := cron.AddJob(fmt.Sprintf("@every 60s"), l)
-	return err
+type ChannelReader struct {
+	name     string
+	lastTime int64
+	internal int64
+	maxRead  int
+	options  []ReaderOptions
+
+	lock    sync.RWMutex
+	running bool
+
+	state checkpoint.EventLogState
+	point *checkpoint.Checkpoint
+
+	records chan []eventlog.Record // 读取到的事件
 }
 
-func (l *Channel) Run() {
-	if l.start {
+func NewChannelReader(name string, lastTime int64, state checkpoint.EventLogState, options ...ReaderOptions) (*ChannelReader, error) {
+	return &ChannelReader{
+		name:     name,
+		state:    state,
+		lastTime: lastTime,
+		options:  options,
+		records:  make(chan []eventlog.Record, 1000),
+	}, nil
+}
+
+func (c *ChannelReader) Run() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.running {
+		logrus.Infof("%s channel reader is running", c.name)
 		return
 	}
-	l.lock.Lock()
-	l.start = true
-	l.lock.Unlock()
-
-	err := l.Open(l.state)
+	c.running = true
+	reader, err := newWinEventReader(c.name, c.state.Timestamp.Unix(), c.maxRead, c.state, c.options...)
 	if err != nil {
-		logrus.Warnf("open %s err: %s", l.Name(), err.Error())
+		logrus.Errorln("new winEventReader err: ", err.Error())
 		return
 	}
-	defer func() {
-		logrus.Infof("stop read %s", l.Name())
 
-		if err := l.Close(); err != nil {
-			logrus.Errorf("close %s err: %v", l.Name(), err.Error())
+	c.run(reader)
+}
+
+func (c *ChannelReader) run(reader *winEventReader) {
+	err := reader.Open(reader.state)
+	if err != nil {
+		logrus.Warnf("open %s err: %s", reader.Name(), err.Error())
+		return
+	}
+
+	defer func() {
+		if err := reader.Close(); err != nil {
+			logrus.Warnf("EventLog[%s] Close() error. %v", reader.Name(), err)
 			return
 		}
 	}()
 
-	// 每秒循环读取日志
-	for l.start {
-		records, err := l.Read()
+	for c.running {
+		events, err := reader.Read()
 		switch err {
 		case nil:
 		case io.EOF:
-			l.lock.Lock()
-			l.start = false
-			l.lock.Unlock()
+			c.running = false
+			break
 		default:
-			l.lock.Lock()
-			l.start = false
-			l.lock.Unlock()
-			logrus.Warnf("read %s error: %s", l.Name(), err.Error())
-			return
+			logrus.Warnf("read %s error: %s", reader.Name(), err.Error())
+			c.running = false
+			break
 		}
 
-		logrus.Infof("%s read %d records", l.Name(), len(records))
-		if len(records) == 0 {
-			time.Sleep(time.Duration(l.internal))
+		if len(events) == 0 {
+			time.Sleep(time.Duration(c.internal) * time.Second)
 			continue
 		}
-		l.point.PersistState(l.state)
-		l.records <- records
+
+		var records []eventlog.Record
+		for _, record := range events {
+			if c.state.Timestamp.UnixNano() >= record.TimeCreated.SystemTime.UnixNano() {
+				continue
+			}
+			records = append(records, record)
+			c.state.RecordNumber = record.RecordID
+			c.state.Timestamp = record.TimeCreated.SystemTime
+			c.state.Bookmark = reader.state.Bookmark
+		}
+		if len(records) == 0 {
+			continue
+		}
+
+		logrus.Infof("add %d deltaEvents to channel", len(records))
+		c.point.PersistState(c.state)
+		c.records <- records
 	}
 }
 
-func (l *Channel) Init() error {
+func (c *ChannelReader) Init() error {
 	return nil
 }
 
-func (l *Channel) SetMaxRead(maxRead int) {
-	l.maxRead = maxRead
+func (c *ChannelReader) SetCron(cron *cron.Cron, internal int64) error {
+	c.internal = internal
+	_, err := cron.AddJob(fmt.Sprintf("@every %ds", internal), c)
+	return err
 }
-func (l *Channel) GetRecords() chan []eventlog.Record {
-	return l.records
+func (c *ChannelReader) SetMaxRead(maxRead int) {
+	c.maxRead = maxRead
 }
-func (l *Channel) Shutdown() {
-	l.start = false
-	close(l.records)
+func (c *ChannelReader) GetRecords() chan []eventlog.Record {
+	return c.records
+}
+func (c *ChannelReader) Shutdown() {
+	c.point.Shutdown()
+	c.running = false
+	close(c.records)
+	logrus.Infof("%s channel reader shutdown....", c.name)
 }
 
-func (l *Channel) SetPoint(point *checkpoint.Checkpoint) {
-	l.point = point
+func (c *ChannelReader) SetPoint(point *checkpoint.Checkpoint) {
+	c.point = point
 }

@@ -129,14 +129,14 @@ func (s *Scheduler) addReader(entry Entry, isETL bool) (reader.Reader, error) {
 		maxRead = 10000
 	} else {
 		lastTime := logState.Timestamp.Unix()
-		var options []reader.ReaderOptions
+		var options = []reader.ReaderOptions{reader.WithStop()}
 		if entry.Level != "" {
 			options = append(options, reader.WithLevel(entry.Level))
 		}
 		if entry.EventID != "" {
 			options = append(options, reader.WithEventID(entry.EventID))
 		}
-		r, err = reader.NewChannelReader(entry.Path, lastTime, options...)
+		r, err = reader.NewChannelReader(entry.Path, lastTime, logState, options...)
 		if err != nil {
 			return nil, err
 		}

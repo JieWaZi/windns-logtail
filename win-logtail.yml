@@ -4,6 +4,9 @@ analytical_path: C:\Windows\System32\winevt\Logs\Microsoft-Windows-DNSServer%4An
 analytical_entries:
   - path: C:\Windows\System32\winevt\Logs\Microsoft-Windows-DNSServer%4Analytical.etl
     internal: 30
+audit_entries:
+  - path: C:\Windows\System32\winevt\Logs\Microsoft-Windows-DNSServer%4Audit.evtx
+    internal: 1
 
 syslog:
   # 日志服务器地址
