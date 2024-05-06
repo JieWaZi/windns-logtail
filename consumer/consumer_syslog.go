@@ -57,56 +57,69 @@ func (s *Syslog) Shutdown() {
 func (s *Syslog) HandleEvents(events []eventlog.Record) error {
 	startTime := time.Now()
 
-	client, err := syslog.NewClient(syslog.ConnectionType(strings.ToLower(s.network)), s.remoteAddr, &tls.Config{})
-	if err != nil {
-		logrus.Errorln("create syslog client  err: ", err.Error())
-		return err
-	}
-	defer client.Close()
-
 	if len(events) == 0 {
 		return nil
 	}
 
 	startIndex := 0
-	var wg = &sync.WaitGroup{}
+
 	for startIndex < len(events) {
 		records, newIndex := readChunk(events, 100, startIndex)
 		if s.state.Timestamp.UnixNano() >= records[len(records)-1].TimeCreated.SystemTime.UnixNano() {
 			continue
 		}
-		for _, record := range records {
-			wg.Add(1)
-			err := s.pool.Submit(func(record eventlog.Record) func() {
-				return func() {
-					defer wg.Done()
-					data, err := json.Marshal(record.Event)
-					if err != nil {
-						logrus.Errorln("json marshal err: ", err.Error())
-						return
-					}
-					if s.state.Timestamp.UnixNano() >= record.TimeCreated.SystemTime.UnixNano() {
-						return
-					}
-					if err = send(client, string(data)+"\n", syslog.LOG_INFO); err != nil {
-						logrus.Errorln("send syslog err: ", err.Error())
-					}
-				}
-			}(record))
-			if err != nil {
-				return err
-			}
+
+		if err := s.batchSend(records); err != nil {
+			logrus.Errorf("send event log to syslog server err: %s", err.Error())
 		}
+
 		s.state.Timestamp = records[len(records)-1].TimeCreated.SystemTime
 		s.point.PersistState(s.state)
 		// 更新起始索引
 		startIndex = newIndex
 	}
 
-	wg.Wait()
-
 	logrus.Infof("finish to send event log to syslog server, total event log is %d, cost:%dms, last event log time is  %s",
 		len(events), time.Now().Sub(startTime).Milliseconds(), s.state.Timestamp)
+	return nil
+}
+
+func (s *Syslog) batchSend(records []eventlog.Record) error {
+	client, err := syslog.NewClient(syslog.ConnectionType(strings.ToLower(s.network)), s.remoteAddr, &tls.Config{})
+	if err != nil {
+		logrus.Errorln("create syslog client  err: ", err.Error())
+		return err
+	}
+	client.SetDeadline(time.Now().Add(30 * time.Second))
+	defer func() {
+		if err = client.Close(); err != nil {
+			logrus.Errorln("syslog client close err: ", err.Error())
+		}
+	}()
+
+	var wg = &sync.WaitGroup{}
+	for _, record := range records {
+		wg.Add(1)
+		err := s.pool.Submit(func(record eventlog.Record) func() {
+			return func() {
+				defer wg.Done()
+				data, err := json.Marshal(record.Event)
+				if err != nil {
+					logrus.Errorln("json marshal err: ", err.Error())
+					return
+				}
+				if s.state.Timestamp.UnixNano() >= record.TimeCreated.SystemTime.UnixNano() {
+					return
+				}
+				_ = send(client, string(data)+"\n", syslog.LOG_INFO)
+			}
+		}(record))
+		if err != nil {
+			return err
+		}
+	}
+	wg.Wait()
+
 	return nil
 }
 

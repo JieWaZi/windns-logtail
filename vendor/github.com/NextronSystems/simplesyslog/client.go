@@ -163,6 +163,10 @@ func (client *Client) Close() error {
 	return client.conn.Close()
 }
 
+func (client *Client) SetDeadline(time time.Time) {
+	client.conn.SetDeadline(time)
+}
+
 // SetMaxBytes sets the maximum bytes that will be sent to rsyslog (approximately)
 func (client *Client) SetMaxBytes(i int64) {
 	client.maxBytes = i

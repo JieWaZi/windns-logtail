@@ -2,11 +2,14 @@ package reader
 
 import (
 	"bytes"
+	"container/list"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"github.com/panjf2000/ants/v2"
+	"sync"
+	"sync/atomic"
 	"windns-logtail/checkpoint"
 
 	"github.com/elastic/beats/winlogbeat/eventlog"
@@ -36,34 +39,51 @@ type ETL struct {
 	pwd     string
 	maxRead int
 
-	xmlLogfiles     chan string
-	etlLogfiles     chan string
+	etlLogfiles chan string
+	sortList    *list.List
+	xmlLogfiles chan *list.Element
+
+	events          chan *Events
 	records         chan []eventlog.Record
+	stopMarshalXML  chan struct{}
 	stopReadXML     chan struct{}
 	stopTransferETL chan struct{}
 
-	sortFiles []string
+	state        checkpoint.EventLogState
+	point        *checkpoint.Checkpoint
+	transferPool *ants.Pool
+	loadPool     *ants.Pool
 
-	state checkpoint.EventLogState
-	point *checkpoint.Checkpoint
-	pool  *ants.Pool
+	count atomic.Int32
+	lock  sync.RWMutex
 }
 
 func NewETLWorker(pwd, logPath string, state checkpoint.EventLogState) (*ETL, error) {
-	pool, err := ants.NewPool(2, ants.WithPreAlloc(true))
+	transferPool, err := ants.NewPool(2, ants.WithPreAlloc(true))
 	if err != nil {
 		return nil, err
 	}
+	loadPool, err := ants.NewPool(3, ants.WithPreAlloc(true))
+	if err != nil {
+		return nil, err
+	}
+
 	reader := &ETL{
-		logPath:         logPath,
-		pwd:             pwd,
-		xmlLogfiles:     make(chan string, 100),
-		etlLogfiles:     make(chan string, 100),
+		logPath:     logPath,
+		pwd:         pwd,
+		etlLogfiles: make(chan string, 20),
+		xmlLogfiles: make(chan *list.Element, 20),
+		events:      make(chan *Events, 20),
+		sortList:    list.New(),
+
 		stopReadXML:     make(chan struct{}, 1),
 		stopTransferETL: make(chan struct{}, 1),
+		stopMarshalXML:  make(chan struct{}, 1),
 		records:         make(chan []eventlog.Record, 500),
 		state:           state,
-		pool:            pool,
+		transferPool:    transferPool,
+		loadPool:        loadPool,
+		lock:            sync.RWMutex{},
 	}
 
 	return reader, nil
@@ -79,10 +99,11 @@ func (w *ETL) SetMaxRead(maxRead int) {
 }
 
 func (w *ETL) Run() {
-	if len(w.etlLogfiles) > 10 || len(w.xmlLogfiles) > 10 {
+	if w.count.Load() > 10 {
 		logrus.Warnf("logfiles too much, skip")
 		return
 	}
+	w.count.Add(1)
 
 	// 日志文件存放在logs目录下
 	logPath := filepath.Join(w.pwd, "logs")
@@ -113,11 +134,14 @@ func (w *ETL) Run() {
 }
 
 func (w *ETL) Init() error {
+	logrus.Infof("start read %s", w.logPath)
 	if err := w.loadFiles(); err != nil {
 		return err
 	}
 
 	go w.transferETL()
+
+	go w.unmarshalETL()
 
 	go w.scanXML()
 
@@ -183,76 +207,120 @@ func (w *ETL) SetPoint(point *checkpoint.Checkpoint) {
 func (w *ETL) transferETL() {
 	for {
 		select {
-		case etlLogfile := <-w.etlLogfiles:
-			w.sortFiles = append(w.sortFiles, etlLogfile)
-			w.pool.Submit(func(etlLogfile string) func() {
+		case etlLogfile := <-w.etlLogfiles: // 在对文件进行转换
+			xmlFile := strings.Replace(etlLogfile, ".etl", ".xml", -1)
+			element := w.addSortFile(xmlFile)
+			_ = w.transferPool.Submit(func(etlLogfile string, element *list.Element) func() {
 				return func() {
 					// 处理完了需要删除文件
-					defer os.RemoveAll(etlLogfile)
-					// 在对文件进行转换
-					xmlLogfile := strings.Replace(etlLogfile, ".etl", ".xml", -1)
+					defer func() {
+						os.RemoveAll(etlLogfile)
+						w.count.Add(^int32(0))
+					}()
+					xmlLogfile := element.Value.(string)
 					startTime := time.Now()
 					// tracerpt.exe Microsoft-Windows-DNSServer%4Analytical2.etl  -of EVTX -o dns_analytical.evtx -y
-					if err := powershell(fmt.Sprintf(`%s %s -of XML -o %s -y`, TracerptExe, etlLogfile, xmlLogfile)); err != nil {
+					if err := powershell(fmt.Sprintf(`%s %s  -lr -of XML -o %s -y`, TracerptExe, etlLogfile, xmlLogfile)); err != nil {
 						logrus.Errorf("transfer %s err: %s", etlLogfile, err.Error())
+						w.sortList.Remove(element)
+						return
 					}
+					logrus.Infof("finish transfer %s cost:%ds", etlLogfile, int64(time.Now().Sub(startTime).Seconds()))
 
-					logrus.Infof("transfer %s cost:%ds", etlLogfile, int64(time.Now().Sub(startTime).Seconds()))
-
-					// 保持日志顺序不变进入channel
-					for {
-						if len(w.sortFiles) > 1 && w.sortFiles[0] != etlLogfile {
-							time.Sleep(1 * time.Second)
-							continue
-						}
-						w.xmlLogfiles <- xmlLogfile
-						if len(w.sortFiles) > 1 {
-							w.sortFiles = w.sortFiles[1:]
-						} else {
-							w.sortFiles = []string{}
-						}
-						break
-					}
+					w.xmlLogfiles <- element
 				}
-			}(etlLogfile))
+			}(etlLogfile, element))
 		case <-w.stopTransferETL:
 			return
 		}
 	}
 }
+
+func (w *ETL) unmarshalETL() {
+	for {
+		select {
+		case e := <-w.xmlLogfiles:
+			_ = w.loadPool.Submit(func(e *list.Element) func() {
+				return func() {
+					xmlLogfile := e.Value.(string)
+					events := new(Events)
+					events.ID = xmlLogfile
+					startTime := time.Now()
+					data, err := os.ReadFile(xmlLogfile)
+					if err != nil {
+						w.removeSortFile(e)
+						w.events <- events
+						logrus.Errorf("read %s xml err: %s", xmlLogfile, err.Error())
+						return
+					}
+
+					if err := xml.Unmarshal(data, &events); err != nil {
+						w.removeSortFile(e)
+						w.events <- events
+						logrus.Errorf("unmarshal %s xml err: %s", xmlLogfile, err.Error())
+						return
+					}
+					data = nil
+
+					w.wait(e)
+					w.events <- events
+					logrus.Infof("finish read %s, cost:%ds", xmlLogfile, int64(time.Now().Sub(startTime).Seconds()))
+				}
+			}(e))
+
+		case <-w.stopReadXML:
+			break
+
+		}
+
+	}
+}
+
+func (w *ETL) addSortFile(file string) *list.Element {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	return w.sortList.PushBack(file)
+}
+
+func (w *ETL) removeSortFile(e *list.Element) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	w.sortList.Remove(e)
+}
+
+func (w *ETL) isFirstFile(e *list.Element) bool {
+	w.lock.RLock()
+	f := w.sortList.Front()
+	w.lock.RUnlock()
+	return f.Value.(string) == e.Value.(string)
+}
+
+func (w *ETL) wait(e *list.Element) {
+	// 保持日志顺序不变进入channel
+	sleepTime := 0
+	for {
+		if w.isFirstFile(e) {
+			break
+		}
+		// 5s输出一次日志
+		if sleepTime%5 == 0 {
+			logrus.Infof("current %s, wait %s", e.Value.(string), w.sortList.Front().Value.(string))
+		}
+		sleepTime++
+		time.Sleep(1 * time.Second)
+	}
+	w.removeSortFile(e)
+}
+
 func (w *ETL) scanXML() {
-	var (
-		data        []byte
-		err         error
-		events      *Events
-		deltaEvents []eventlog.Record
-	)
+	var deltaEvents []eventlog.Record
 
 	for {
 		select {
-		case xmlLogfile := <-w.xmlLogfiles:
-			defer func() {
-				// 处理完了需要删除文件
-				if err := os.RemoveAll(xmlLogfile); err != nil {
-					logrus.Errorf("rm %s err: %s", xmlLogfile, err.Error())
-				}
-				logrus.Infof("finish read %s, delete it", xmlLogfile)
-			}()
-
-			logrus.Infof("start to read %s", xmlLogfile)
-			data, err = os.ReadFile(xmlLogfile)
-			if err != nil {
-				logrus.Errorf("read %s xml err: %s", xmlLogfile, err.Error())
+		case events := <-w.events:
+			if events == nil {
 				continue
 			}
-			events = new(Events)
-			if err := xml.Unmarshal(data, &events); err != nil {
-				logrus.Errorf("unmarshal %s xml err: %s", xmlLogfile, err.Error())
-				continue
-			}
-			data = nil
-
-			// 按照最大的读取量进行拆分
 			for _, event := range events.EventLogs {
 				// 筛选出大于上次更新时的记录
 				if w.state.Timestamp.UnixNano() > event.TimeCreated.SystemTime.UnixNano() {
@@ -264,12 +332,19 @@ func (w *ETL) scanXML() {
 						continue
 					}
 				}
-
 				deltaEvents = append(deltaEvents, eventlog.Record{Event: event.Event})
 			}
-			// 按照最大的读取量进行拆分
-			logrus.Infof("total event is %d, add %d deltaEvents to channel", len(events.EventLogs), len(deltaEvents))
+
+			// 处理完了需要删除文件
+			if err := os.RemoveAll(events.ID); err != nil {
+				logrus.Errorf("rm %s err: %s", events.ID, err.Error())
+			}
+			logrus.Infof("%s total event is %d, add %d deltaEvents to channel", events.ID, len(events.EventLogs), len(deltaEvents))
 			events = nil
+
+			if len(deltaEvents) == 0 {
+				continue
+			}
 
 			// 循环读取并处理数组
 			startIndex := 0
@@ -296,14 +371,18 @@ func (w *ETL) scanXML() {
 }
 
 func (w *ETL) Shutdown() {
-	w.pool.Release()
+	w.transferPool.Release()
+	w.loadPool.Release()
 	w.stopReadXML <- struct{}{}
 	w.stopTransferETL <- struct{}{}
+	w.stopMarshalXML <- struct{}{}
 
 	close(w.etlLogfiles)
+	close(w.events)
 	close(w.xmlLogfiles)
 	close(w.stopReadXML)
 	close(w.stopTransferETL)
+	close(w.stopMarshalXML)
 	close(w.records)
 }
 
@@ -323,7 +402,7 @@ func (w *ETL) loadFiles() error {
 			w.etlLogfiles <- file
 		}
 		if strings.Contains(file, ".xml") {
-			w.xmlLogfiles <- file
+			w.xmlLogfiles <- w.addSortFile(file)
 		}
 	}
 	return err

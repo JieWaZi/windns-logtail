@@ -408,6 +408,7 @@ func (c *ChannelReader) run(reader *winEventReader) {
 }
 
 func (c *ChannelReader) Init() error {
+	logrus.Infof("start read %s", c.name)
 	return nil
 }
 

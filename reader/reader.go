@@ -23,6 +23,7 @@ type Reader interface {
 }
 
 type Events struct {
+	ID        string            `xml:"-" json:"-"`
 	XMLName   xml.Name          `xml:"Events" json:"-"`
 	EventLogs []eventlog.Record `xml:"Event" json:"EventLogs"`
 }
@@ -63,7 +64,6 @@ func (m *Manager) Checkpoint() *checkpoint.Checkpoint {
 }
 
 func (m *Manager) Start() {
-	logrus.Infoln("reader manager start....")
 	m.cron.Start()
 }
 
@@ -73,5 +73,4 @@ func (m *Manager) Shutdown() {
 	for _, reader := range m.Readers {
 		reader.Shutdown()
 	}
-	logrus.Infoln("reader manager stop")
 }
