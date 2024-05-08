@@ -43,11 +43,12 @@ type ETL struct {
 	sortList    *list.List
 	xmlLogfiles chan *list.Element
 
-	events          chan *Events
-	records         chan []eventlog.Record
-	stopMarshalXML  chan struct{}
-	stopReadXML     chan struct{}
-	stopTransferETL chan struct{}
+	events           chan *Events
+	records          chan []eventlog.Record
+	stopUnmarshalXML chan struct{}
+	stopReadXML      chan struct{}
+	stopTransferETL  chan struct{}
+	stop             bool
 
 	state        checkpoint.EventLogState
 	point        *checkpoint.Checkpoint
@@ -76,14 +77,14 @@ func NewETLWorker(pwd, logPath string, state checkpoint.EventLogState) (*ETL, er
 		events:      make(chan *Events, 20),
 		sortList:    list.New(),
 
-		stopReadXML:     make(chan struct{}, 1),
-		stopTransferETL: make(chan struct{}, 1),
-		stopMarshalXML:  make(chan struct{}, 1),
-		records:         make(chan []eventlog.Record, 500),
-		state:           state,
-		transferPool:    transferPool,
-		loadPool:        loadPool,
-		lock:            sync.RWMutex{},
+		stopReadXML:      make(chan struct{}, 1),
+		stopTransferETL:  make(chan struct{}, 1),
+		stopUnmarshalXML: make(chan struct{}, 1),
+		records:          make(chan []eventlog.Record, 500),
+		state:            state,
+		transferPool:     transferPool,
+		loadPool:         loadPool,
+		lock:             sync.RWMutex{},
 	}
 
 	return reader, nil
@@ -205,7 +206,7 @@ func (w *ETL) SetPoint(point *checkpoint.Checkpoint) {
 }
 
 func (w *ETL) transferETL() {
-	for {
+	for !w.stop {
 		select {
 		case etlLogfile := <-w.etlLogfiles: // 在对文件进行转换
 			xmlFile := strings.Replace(etlLogfile, ".etl", ".xml", -1)
@@ -237,7 +238,7 @@ func (w *ETL) transferETL() {
 }
 
 func (w *ETL) unmarshalETL() {
-	for {
+	for !w.stop {
 		select {
 		case e := <-w.xmlLogfiles:
 			_ = w.loadPool.Submit(func(e *list.Element) func() {
@@ -268,9 +269,8 @@ func (w *ETL) unmarshalETL() {
 				}
 			}(e))
 
-		case <-w.stopReadXML:
-			break
-
+		case <-w.stopUnmarshalXML:
+			return
 		}
 
 	}
@@ -298,7 +298,7 @@ func (w *ETL) isFirstFile(e *list.Element) bool {
 func (w *ETL) wait(e *list.Element) {
 	// 保持日志顺序不变进入channel
 	sleepTime := 0
-	for {
+	for !w.stop {
 		if w.isFirstFile(e) {
 			break
 		}
@@ -315,7 +315,7 @@ func (w *ETL) wait(e *list.Element) {
 func (w *ETL) scanXML() {
 	var deltaEvents []eventlog.Record
 
-	for {
+	for !w.stop {
 		select {
 		case events := <-w.events:
 			if events == nil {
@@ -371,18 +371,19 @@ func (w *ETL) scanXML() {
 }
 
 func (w *ETL) Shutdown() {
+	w.stop = true
 	w.transferPool.Release()
 	w.loadPool.Release()
 	w.stopReadXML <- struct{}{}
 	w.stopTransferETL <- struct{}{}
-	w.stopMarshalXML <- struct{}{}
+	w.stopUnmarshalXML <- struct{}{}
 
 	close(w.etlLogfiles)
 	close(w.events)
 	close(w.xmlLogfiles)
 	close(w.stopReadXML)
 	close(w.stopTransferETL)
-	close(w.stopMarshalXML)
+	close(w.stopUnmarshalXML)
 	close(w.records)
 }
 

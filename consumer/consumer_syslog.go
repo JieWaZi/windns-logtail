@@ -25,6 +25,8 @@ type Syslog struct {
 	state checkpoint.EventLogState
 	point *checkpoint.Checkpoint
 	pool  *ants.Pool
+
+	wg *sync.WaitGroup
 }
 
 func NewSysLogConsumer(name, pwd, remoteAddr, network string, state checkpoint.EventLogState) (*Syslog, error) {
@@ -39,6 +41,7 @@ func NewSysLogConsumer(name, pwd, remoteAddr, network string, state checkpoint.E
 		network:    network,
 		state:      state,
 		pool:       pool,
+		wg:         &sync.WaitGroup{},
 	}, nil
 }
 
@@ -51,6 +54,7 @@ func (s *Syslog) SetPoint(point *checkpoint.Checkpoint) {
 }
 
 func (s *Syslog) Shutdown() {
+	s.wg = nil
 	s.pool.Release()
 }
 
@@ -97,12 +101,11 @@ func (s *Syslog) batchSend(records []eventlog.Record) error {
 		}
 	}()
 
-	var wg = &sync.WaitGroup{}
 	for _, record := range records {
-		wg.Add(1)
+		s.wg.Add(1)
 		err := s.pool.Submit(func(record eventlog.Record) func() {
 			return func() {
-				defer wg.Done()
+				defer s.wg.Done()
 				data, err := json.Marshal(record.Event)
 				if err != nil {
 					logrus.Errorln("json marshal err: ", err.Error())
@@ -118,21 +121,37 @@ func (s *Syslog) batchSend(records []eventlog.Record) error {
 			return err
 		}
 	}
-	wg.Wait()
+	s.wg.Wait()
 
 	return nil
 }
 
 func send(client *syslog.Client, message string, priority syslog.Priority) error {
-	var timestamp string
-	timestamp = time.Now().Format(time.RFC3339)
-	var header string
-	if client.NoPrio {
-		header = fmt.Sprintf("%s %s", timestamp, client.Hostname)
-	} else {
-		header = fmt.Sprintf("<%d>%s %s", int(priority), timestamp, client.Hostname)
+	timer := time.NewTimer(10 * time.Second)
+	done := make(chan struct{}, 1)
+	defer close(done)
+
+	go func() {
+		var timestamp string
+		timestamp = time.Now().Format(time.RFC3339)
+		var header string
+		if client.NoPrio {
+			header = fmt.Sprintf("%s %s", timestamp, client.Hostname)
+		} else {
+			header = fmt.Sprintf("<%d>%s %s", int(priority), timestamp, client.Hostname)
+		}
+		_ = client.SendRaw(fmt.Sprintf("%s %s", header, message))
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+		timer.Stop()
+		return nil
+	case <-timer.C:
+		logrus.Errorln("send event log to syslog server timeout")
+		return nil
 	}
-	return client.SendRaw(fmt.Sprintf("%s %s", header, message))
 }
 
 func readChunk(arr []eventlog.Record, chunkSize int, startIndex int) ([]eventlog.Record, int) {
