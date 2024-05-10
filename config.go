@@ -42,6 +42,8 @@ type Entry struct {
 	Level string `yaml:"level"`
 	// 事件ID范围
 	EventID string `yaml:"event_id"`
+	// etl文件转换并发数
+	TransferThreads int `yaml:"transfer_threads"`
 }
 
 type SysLogConfig struct {

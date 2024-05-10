@@ -122,7 +122,7 @@ func (s *Scheduler) addReader(entry Entry, isETL bool) (reader.Reader, error) {
 		maxRead int64 = 1000
 	)
 	if isETL {
-		r, err = reader.NewETLWorker(s.pwd, entry.Path, logState)
+		r, err = reader.NewETLWorker(s.pwd, entry.Path, entry.TransferThreads, logState)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +182,8 @@ func (s *Scheduler) hookConsumer(name string, config *Config, r reader.Reader) e
 }
 
 func (s *Scheduler) Stop(service service.Service) error {
-	s.readeManager.Shutdown()
-	s.consumerManager.Shutdown()
+	go s.readeManager.Shutdown()
+	go s.consumerManager.Shutdown()
+
 	return nil
 }

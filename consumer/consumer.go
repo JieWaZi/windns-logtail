@@ -107,24 +107,3 @@ func (m *Manager) Shutdown() {
 	}
 	m.pool.Release()
 }
-
-func formatTime(date string) (time.Time, error) {
-	var (
-		formatTime time.Time
-		err        error
-	)
-	// 通过XML获取的时间会携带时区，统一按照当前环境的时区进行处理
-	if len(date) > len(WindowSystemLayout) {
-		date = date[:len(WindowSystemLayout)]
-	}
-	location, err := time.LoadLocation("Local")
-	if err != nil {
-		return formatTime, err
-	}
-	formatTime, err = time.ParseInLocation(WindowSystemLayout, date, location)
-	if err != nil {
-		return formatTime, err
-	}
-
-	return formatTime, nil
-}

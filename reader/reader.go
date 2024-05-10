@@ -71,6 +71,6 @@ func (m *Manager) Shutdown() {
 	m.cron.Stop()
 	m.point.Shutdown()
 	for _, reader := range m.Readers {
-		reader.Shutdown()
+		go reader.Shutdown()
 	}
 }

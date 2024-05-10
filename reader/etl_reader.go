@@ -59,12 +59,15 @@ type ETL struct {
 	lock  sync.RWMutex
 }
 
-func NewETLWorker(pwd, logPath string, state checkpoint.EventLogState) (*ETL, error) {
-	transferPool, err := ants.NewPool(2, ants.WithPreAlloc(true))
+func NewETLWorker(pwd, logPath string, transferThreads int, state checkpoint.EventLogState) (*ETL, error) {
+	if transferThreads == 0 {
+		transferThreads = 1
+	}
+	transferPool, err := ants.NewPool(transferThreads, ants.WithPreAlloc(true))
 	if err != nil {
 		return nil, err
 	}
-	loadPool, err := ants.NewPool(3, ants.WithPreAlloc(true))
+	loadPool, err := ants.NewPool(transferThreads+1, ants.WithPreAlloc(true))
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +126,7 @@ func (w *ETL) Run() {
 	etlLogfile := filepath.Join(logPath, fmt.Sprintf("%d%s", time.Now().Unix(), filepath.Base(w.logPath)))
 	// 先将文件转移
 	if err := powershell(fmt.Sprintf("Copy-Item %s %s", w.logPath, etlLogfile)); err != nil {
-		logrus.Errorf("Copy log file err: \n", err.Error())
+		logrus.Errorln("Copy log file err: ", err.Error())
 		return
 	}
 	// 先将文件转移
@@ -372,11 +375,12 @@ func (w *ETL) scanXML() {
 
 func (w *ETL) Shutdown() {
 	w.stop = true
-	w.transferPool.Release()
-	w.loadPool.Release()
 	w.stopReadXML <- struct{}{}
 	w.stopTransferETL <- struct{}{}
 	w.stopUnmarshalXML <- struct{}{}
+
+	w.transferPool.Release()
+	w.loadPool.Release()
 
 	close(w.etlLogfiles)
 	close(w.events)
