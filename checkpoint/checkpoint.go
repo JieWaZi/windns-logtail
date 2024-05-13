@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package checkpoint persists event log state information to disk so that
-// event log monitoring can resume from the last read event in the case of a
+// Package checkpoint persists eventlog log state information to disk so that
+// eventlog log monitoring can resume from the last read eventlog in the case of a
 // restart or unexpected interruption.
 package checkpoint
 
@@ -34,7 +34,7 @@ import (
 	"github.com/elastic/beats/libbeat/logp"
 )
 
-// Checkpoint persists event log state information to disk.
+// Checkpoint persists eventlog log state information to disk.
 type Checkpoint struct {
 	wg            sync.WaitGroup // WaitGroup used to wait on the shutdown of the checkpoint worker.
 	done          chan struct{}  // Channel for shutting down the checkpoint worker.
@@ -58,7 +58,7 @@ type PersistedState struct {
 	States     []EventLogState `yaml:"event_logs"`
 }
 
-// EventLogState represents the state of an individual event log.
+// EventLogState represents the state of an individual eventlog log.
 type EventLogState struct {
 	Name         string    `yaml:"name"`
 	RecordNumber uint64    `yaml:"record_number"`
@@ -72,7 +72,7 @@ type EventLogState struct {
 // state information to disk. Shutdown should be called when finished to
 // guarantee any in-memory state information is flushed to disk.
 //
-// file is the name of the file where event log state is persisted as YAML.
+// file is the name of the file where eventlog log state is persisted as YAML.
 // maxUpdates is the maximum number of updates checkpoint will accept before
 // triggering a flush to disk. interval is maximum amount of time that can
 // pass since the last flush before triggering a flush to disk (minimum value
@@ -161,7 +161,7 @@ func (c *Checkpoint) Shutdown() {
 	})
 }
 
-// States returns the current in-memory event log state. This state information
+// States returns the current in-memory eventlog log state. This state information
 // is bootstrapped with any data found on disk at creation time.
 func (c *Checkpoint) States() map[string]EventLogState {
 	c.lock.RLock()
@@ -175,7 +175,7 @@ func (c *Checkpoint) States() map[string]EventLogState {
 	return copy
 }
 
-// Persist queues the given event log state information to be written to disk.
+// Persist queues the given eventlog log state information to be written to disk.
 func (c *Checkpoint) Persist(name string, recordNumber uint64, ts time.Time, bookmark string) {
 	c.PersistState(EventLogState{
 		Name:         name,
@@ -185,7 +185,7 @@ func (c *Checkpoint) Persist(name string, recordNumber uint64, ts time.Time, boo
 	})
 }
 
-// PersistState queues the given event log state to be written to disk.
+// PersistState queues the given eventlog log state to be written to disk.
 func (c *Checkpoint) PersistState(st EventLogState) {
 	c.save <- st
 }

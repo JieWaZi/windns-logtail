@@ -3,49 +3,18 @@
 # github.com/NextronSystems/simplesyslog v0.0.0-20210428092047-3d45942f13d1
 ## explicit
 github.com/NextronSystems/simplesyslog
-# github.com/andrewkroh/sys v0.0.0-20151128191922-287798fe3e43
-## explicit
-# github.com/dustin/go-humanize v1.0.1
-## explicit; go 1.16
 # github.com/elastic/beats v7.6.2+incompatible
 ## explicit
-github.com/elastic/beats/libbeat/beat
-github.com/elastic/beats/libbeat/common
 github.com/elastic/beats/libbeat/common/file
-github.com/elastic/beats/libbeat/common/reload
-github.com/elastic/beats/libbeat/feature
 github.com/elastic/beats/libbeat/logp
-github.com/elastic/beats/libbeat/management
 github.com/elastic/beats/libbeat/paths
-github.com/elastic/beats/winlogbeat/checkpoint
-github.com/elastic/beats/winlogbeat/eventlog
 github.com/elastic/beats/winlogbeat/sys
-github.com/elastic/beats/winlogbeat/sys/eventlogging
 github.com/elastic/beats/winlogbeat/sys/wineventlog
-# github.com/elastic/go-sysinfo v1.14.0
-## explicit; go 1.21
-github.com/elastic/go-sysinfo
-github.com/elastic/go-sysinfo/internal/registry
-github.com/elastic/go-sysinfo/providers/aix
-github.com/elastic/go-sysinfo/providers/darwin
-github.com/elastic/go-sysinfo/providers/linux
-github.com/elastic/go-sysinfo/providers/shared
-github.com/elastic/go-sysinfo/providers/windows
-github.com/elastic/go-sysinfo/types
-# github.com/elastic/go-ucfg v0.8.8
-## explicit; go 1.13
-github.com/elastic/go-ucfg
-github.com/elastic/go-ucfg/cfgutil
-github.com/elastic/go-ucfg/flag
-github.com/elastic/go-ucfg/json
-github.com/elastic/go-ucfg/parse
-github.com/elastic/go-ucfg/yaml
-# github.com/elastic/go-windows v1.0.0
-## explicit
-github.com/elastic/go-windows
-# github.com/gofrs/uuid v4.4.0+incompatible
-## explicit
-github.com/gofrs/uuid
+# github.com/google/gopacket v1.1.19
+## explicit; go 1.12
+github.com/google/gopacket
+github.com/google/gopacket/layers
+github.com/google/gopacket/pcap
 # github.com/hashicorp/errwrap v1.0.0
 ## explicit
 github.com/hashicorp/errwrap
@@ -64,6 +33,11 @@ github.com/kardianos/service
 # github.com/kr/fs v0.1.0
 ## explicit
 github.com/kr/fs
+# github.com/miekg/dns v1.1.59
+## explicit; go 1.19
+github.com/miekg/dns
+# github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e
+## explicit; go 1.12
 # github.com/panjf2000/ants/v2 v2.9.1
 ## explicit; go 1.13
 github.com/panjf2000/ants/v2
@@ -75,19 +49,12 @@ github.com/pkg/errors
 ## explicit; go 1.15
 github.com/pkg/sftp
 github.com/pkg/sftp/internal/encoding/ssh/filexfer
-# github.com/prometheus/procfs v0.8.0
-## explicit; go 1.17
-github.com/prometheus/procfs
-github.com/prometheus/procfs/internal/fs
-github.com/prometheus/procfs/internal/util
 # github.com/robfig/cron/v3 v3.0.1
 ## explicit; go 1.12
 github.com/robfig/cron/v3
 # github.com/sirupsen/logrus v1.9.3
 ## explicit; go 1.13
 github.com/sirupsen/logrus
-# github.com/spf13/cobra v1.8.0
-## explicit; go 1.15
 # go.uber.org/multierr v1.10.0
 ## explicit; go 1.19
 go.uber.org/multierr
@@ -113,6 +80,16 @@ golang.org/x/crypto/internal/alias
 golang.org/x/crypto/internal/poly1305
 golang.org/x/crypto/ssh
 golang.org/x/crypto/ssh/internal/bcrypt_pbkdf
+# golang.org/x/mod v0.16.0
+## explicit; go 1.18
+golang.org/x/mod/semver
+# golang.org/x/net v0.22.0
+## explicit; go 1.18
+golang.org/x/net/bpf
+golang.org/x/net/internal/iana
+golang.org/x/net/internal/socket
+golang.org/x/net/ipv4
+golang.org/x/net/ipv6
 # golang.org/x/sync v0.7.0
 ## explicit; go 1.18
 # golang.org/x/sys v0.19.0
@@ -124,6 +101,28 @@ golang.org/x/sys/windows/registry
 golang.org/x/sys/windows/svc
 golang.org/x/sys/windows/svc/eventlog
 golang.org/x/sys/windows/svc/mgr
+# golang.org/x/tools v0.19.0
+## explicit; go 1.19
+golang.org/x/tools/go/gcexportdata
+golang.org/x/tools/go/internal/packagesdriver
+golang.org/x/tools/go/packages
+golang.org/x/tools/go/types/objectpath
+golang.org/x/tools/internal/aliases
+golang.org/x/tools/internal/event
+golang.org/x/tools/internal/event/core
+golang.org/x/tools/internal/event/keys
+golang.org/x/tools/internal/event/label
+golang.org/x/tools/internal/event/tag
+golang.org/x/tools/internal/gcimporter
+golang.org/x/tools/internal/gocommand
+golang.org/x/tools/internal/packagesinternal
+golang.org/x/tools/internal/pkgbits
+golang.org/x/tools/internal/tokeninternal
+golang.org/x/tools/internal/typeparams
+golang.org/x/tools/internal/typesinternal
+golang.org/x/tools/internal/versions
+# gopkg.in/check.v1 v1.0.0-20200227125254-8fa46927fb4f
+## explicit
 # gopkg.in/natefinch/lumberjack.v2 v2.0.0
 ## explicit
 gopkg.in/natefinch/lumberjack.v2
@@ -133,6 +132,3 @@ gopkg.in/yaml.v2
 # gopkg.in/yaml.v3 v3.0.1
 ## explicit
 gopkg.in/yaml.v3
-# howett.net/plist v0.0.0-20181124034731-591f970eefbb
-## explicit
-howett.net/plist

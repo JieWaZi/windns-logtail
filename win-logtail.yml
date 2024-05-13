@@ -1,38 +1,43 @@
 analytical_entries:
   - path: C:\Windows\System32\winevt\Logs\Microsoft-Windows-DNSServer%4Analytical.etl
     internal: 30
+    syslog:
+      # 是否启用(true/false)
+      enable:
+      # 日志服务器地址
+      remote_addr:
+      # 日志服务器端口
+      remote_port:
+      # 使用的网络协议（tcp/udp）
+      network:
+
 audit_entries:
   - path: C:\Windows\System32\winevt\Logs\Microsoft-Windows-DNSServer%4Audit.evtx
     internal: 60
+    syslog:
+      # 是否启用(true/false)
+      enable:
+      # 日志服务器地址
+      remote_addr:
+      # 日志服务器端口
+      remote_port:
+      # 使用的网络协议（tcp/udp）
+      network:
 
-
-
-syslog:
-  # 日志服务器地址
-  remote_addr:
-  # 日志服务器端口
-  remote_port:
-  # 使用的网络协议（tcp/udp）
-  network:
+# DNS抓包配置
+dns_packet:
   # 是否启用(true/false)
-  enable:
-
-ftp:
-  # 服务器地址
-  remote_addr:
-  # 服务器端口
-  remote_port:
-  # 账号
-  username:
-  # 密码
-  password:
-  # 上传目录
-  file_path:
-  # 文件上传大小(MB,最小值为1M)
-  file_max_size:
-  # 是否启用(true/false)
-  enable:
-  # 使用sftp(true/false)
-  is_sftp:
-  # 日志前缀
-  log_file_prefix:
+  enable: true
+  # 网卡名称
+  device_name: eth0
+  # 过滤ip列表，用于只分析名单中的ip，通过设置抓包条件实现，为空时分析所有udp 53报文
+  filter_ips: []
+  syslog:
+    # 是否启用(true/false)
+    enable:
+    # 日志服务器地址
+    remote_addr:
+    # 日志服务器端口
+    remote_port:
+    # 使用的网络协议（tcp/udp）
+    network:

@@ -3,8 +3,8 @@ package reader
 import (
 	"encoding/xml"
 	"windns-logtail/checkpoint"
+	"windns-logtail/eventlog"
 
-	"github.com/elastic/beats/winlogbeat/eventlog"
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
 	"path/filepath"
@@ -23,9 +23,9 @@ type Reader interface {
 }
 
 type Events struct {
-	ID        string            `xml:"-" json:"-"`
-	XMLName   xml.Name          `xml:"Events" json:"-"`
-	EventLogs []eventlog.Record `xml:"Event" json:"EventLogs"`
+	ID        string               `xml:"-" json:"-"`
+	XMLName   xml.Name             `xml:"Events" json:"-"`
+	EventLogs []eventlog.WinRecord `xml:"Event" json:"EventLogs"`
 }
 
 type Manager struct {
@@ -63,8 +63,10 @@ func (m *Manager) Checkpoint() *checkpoint.Checkpoint {
 	return m.point
 }
 
-func (m *Manager) Start() {
+func (m *Manager) Start() error {
 	m.cron.Start()
+
+	return nil
 }
 
 func (m *Manager) Shutdown() {

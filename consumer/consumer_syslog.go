@@ -2,16 +2,15 @@ package consumer
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	syslog "github.com/NextronSystems/simplesyslog"
-	"github.com/elastic/beats/winlogbeat/eventlog"
 	"github.com/panjf2000/ants/v2"
 	"github.com/sirupsen/logrus"
 	"strings"
 	"sync"
 	"time"
 	"windns-logtail/checkpoint"
+	"windns-logtail/eventlog"
 )
 
 type Syslog struct {
@@ -69,22 +68,23 @@ func (s *Syslog) HandleEvents(events []eventlog.Record) error {
 
 	for startIndex < len(events) {
 		records, newIndex := readChunk(events, 100, startIndex)
-		if s.state.Timestamp.UnixNano() >= records[len(records)-1].TimeCreated.SystemTime.UnixNano() {
+		if s.state.Timestamp.UnixNano() >= records[len(records)-1].Timestamp().UnixNano() {
 			continue
 		}
 
 		if err := s.batchSend(records); err != nil {
-			logrus.Errorf("send event log to syslog server err: %s", err.Error())
+			logrus.Errorf("send eventlog log to syslog server err: %s", err.Error())
 		}
 
-		s.state.Timestamp = records[len(records)-1].TimeCreated.SystemTime
+		s.state.Timestamp = records[len(records)-1].Timestamp()
 		s.point.PersistState(s.state)
 		// 更新起始索引
 		startIndex = newIndex
 	}
 
-	logrus.Infof("finish to send event log to syslog server, total event log is %d, cost:%dms, last event log time is  %s",
+	logrus.Infof("finish to send eventlog log to syslog server, total eventlog log is %d, cost:%dms, last eventlog log time is  %s",
 		len(events), time.Now().Sub(startTime).Milliseconds(), s.state.Timestamp)
+	events = nil
 	return nil
 }
 
@@ -106,15 +106,10 @@ func (s *Syslog) batchSend(records []eventlog.Record) error {
 		err := s.pool.Submit(func(record eventlog.Record) func() {
 			return func() {
 				defer s.wg.Done()
-				data, err := json.Marshal(record.Event)
-				if err != nil {
-					logrus.Errorln("json marshal err: ", err.Error())
+				if s.state.Timestamp.UnixNano() >= record.Timestamp().UnixNano() {
 					return
 				}
-				if s.state.Timestamp.UnixNano() >= record.TimeCreated.SystemTime.UnixNano() {
-					return
-				}
-				_ = send(client, string(data)+"\n", syslog.LOG_INFO)
+				_ = send(client, string(record.String())+"\n", syslog.LOG_INFO)
 			}
 		}(record))
 		if err != nil {
@@ -140,7 +135,9 @@ func send(client *syslog.Client, message string, priority syslog.Priority) error
 		} else {
 			header = fmt.Sprintf("<%d>%s %s", int(priority), timestamp, client.Hostname)
 		}
-		_ = client.SendRaw(fmt.Sprintf("%s %s", header, message))
+		if err := client.SendRaw(fmt.Sprintf("%s %s", header, message)); err != nil {
+			logrus.Errorf("send eventlog log to syslog server err: %s", err.Error())
+		}
 		done <- struct{}{}
 	}()
 
@@ -149,7 +146,6 @@ func send(client *syslog.Client, message string, priority syslog.Priority) error
 		timer.Stop()
 		return nil
 	case <-timer.C:
-		logrus.Errorln("send event log to syslog server timeout")
 		return nil
 	}
 }

@@ -27,10 +27,8 @@ type Config struct {
 	AnalyticalEntries []Entry `yaml:"analytical_entries"`
 	// audit类型文件
 	AuditEntries []Entry `yaml:"audit_entries"`
-	// syslog服务器配置
-	SysLog SysLogConfig `yaml:"syslog"`
-	// ftp服务器
-	FTP FTPConfig `yaml:"ftp"`
+	// dns抓包日志
+	DNSPacket DNSPacket `yaml:"dns_packet"`
 }
 
 type Entry struct {
@@ -44,6 +42,23 @@ type Entry struct {
 	EventID string `yaml:"event_id"`
 	// etl文件转换并发数
 	TransferThreads int `yaml:"transfer_threads"`
+
+	// syslog服务器配置
+	SysLog SysLogConfig `yaml:"syslog"`
+	// ftp服务器
+	FTP FTPConfig `yaml:"ftp"`
+}
+
+type DNSPacket struct {
+	// 是否启用
+	Enable bool `yaml:"enable"`
+	// 网卡名称
+	DeviceName string `yaml:"device_name"`
+	// 过滤IP
+	FilterIPS []string `yaml:"filter_ips"`
+
+	SysLog SysLogConfig `yaml:"syslog"`
+	FTP    FTPConfig    `yaml:"ftp"`
 }
 
 type SysLogConfig struct {
@@ -78,20 +93,6 @@ type FTPConfig struct {
 	LogFilePrefix string `yaml:"log_file_prefix"`
 }
 
-func (c *Config) init() {
-	installationPath := getCurrentAbPath()
-
-	if c.FTP.Enable {
-		_ = os.MkdirAll(filepath.Join(installationPath, ArchiveLogPath), 0666)
-		// 文件最大值默认为1M
-		if c.FTP.FileMaxSize <= 0 {
-			c.FTP.FileMaxSize = 1
-		}
-	}
-
-	InitLogger(filepath.Join(installationPath, AnalyticalLog), logrus.InfoLevel.String(), false, false)
-}
-
 func LoadConfig(filename string) (*Config, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -104,7 +105,9 @@ func LoadConfig(filename string) (*Config, error) {
 		return nil, err
 	}
 
-	config.init()
+	installationPath := getCurrentAbPath()
+
+	InitLogger(filepath.Join(installationPath, AnalyticalLog), logrus.InfoLevel.String(), false, false)
 
 	return &config, nil
 }

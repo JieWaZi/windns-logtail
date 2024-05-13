@@ -2,8 +2,6 @@ package reader
 
 import (
 	"fmt"
-	cp1 "github.com/elastic/beats/winlogbeat/checkpoint"
-	"github.com/elastic/beats/winlogbeat/eventlog"
 	"github.com/elastic/beats/winlogbeat/sys"
 	"github.com/elastic/beats/winlogbeat/sys/wineventlog"
 	"github.com/pkg/errors"
@@ -16,6 +14,7 @@ import (
 	"syscall"
 	"time"
 	"windns-logtail/checkpoint"
+	"windns-logtail/eventlog"
 )
 
 const (
@@ -41,31 +40,31 @@ type winEventReader struct {
 	stopIFEmpty bool // 未读到事件则停止
 }
 
-type ReaderOptions = func(*winEventReader)
+type WinEventOptions = func(*winEventReader)
 
 // WithLevel 指定获取日志级别，不指定level默认所有
-func WithLevel(level string) ReaderOptions {
+func WithLevel(level string) WinEventOptions {
 	return func(reader *winEventReader) {
 		reader.query.Level = level
 	}
 }
 
 // WithEventID 指定事件ID，不指定eventID默认所有，如果指定，格式为区间范围如1-4
-func WithEventID(eventID string) ReaderOptions {
+func WithEventID(eventID string) WinEventOptions {
 	return func(reader *winEventReader) {
 		reader.query.EventID = eventID
 	}
 }
 
 // WithStop 未获取到事件则退出读取
-func WithStop() ReaderOptions {
+func WithStop() WinEventOptions {
 	return func(reader *winEventReader) {
 		reader.stopIFEmpty = true
 	}
 }
 
 // NewChannelReader 创建结构体
-func newWinEventReader(name string, lastTime int64, maxRead int, state checkpoint.EventLogState, options ...ReaderOptions) (*winEventReader, error) {
+func newWinEventReader(name string, lastTime int64, maxRead int, state checkpoint.EventLogState, options ...WinEventOptions) (*winEventReader, error) {
 	query := &wineventlog.Query{Log: name}
 	if lastTime != 0 {
 		query.IgnoreOlder = time.Duration(lastTime)
@@ -158,17 +157,17 @@ func (l *winEventReader) openFile(state checkpoint.EventLogState, bookmark winev
 	//}
 	h, err := wineventlog.EvtQuery(0, path, "", wineventlog.EvtQueryFilePath|wineventlog.EvtQueryForwardDirection)
 	if err != nil {
-		return errors.Wrapf(err, "failed to get handle to event log file %v", path)
+		return errors.Wrapf(err, "failed to get handle to eventlog log file %v", path)
 	}
 
 	if bookmark > 0 {
 		logrus.Debugf("Seeking to bookmark. timestamp=%v bookmark=%v", state.Timestamp, state.Bookmark)
 
-		// This seeks to the last read event and strictly validates that the
+		// This seeks to the last read eventlog and strictly validates that the
 		// bookmarked record number exists.
 		if err = wineventlog.EvtSeek(h, 0, bookmark, wineventlog.EvtSeekRelativeToBookmark|wineventlog.EvtSeekStrict); err == nil {
-			// Then we advance past the last read event to avoid sending that
-			// event again. This won't fail if we're at the end of the file.
+			// Then we advance past the last read eventlog to avoid sending that
+			// eventlog again. This won't fail if we're at the end of the file.
 			err = errors.Wrap(
 				wineventlog.EvtSeek(h, 1, bookmark, wineventlog.EvtSeekRelativeToBookmark),
 				"failed to seek past bookmarked position")
@@ -213,12 +212,12 @@ func (l *winEventReader) Read() ([]eventlog.Record, error) {
 			err = l.render(h, l.outputBuf)
 		}
 		if err != nil && l.outputBuf.Len() == 0 {
-			logrus.Errorln("Dropping event with rendering err:", err)
+			logrus.Errorln("Dropping eventlog with rendering err:", err)
 			continue
 		}
 
 		r, _ := l.buildRecordFromXML(l.outputBuf.Bytes(), err)
-		r.Offset = cp1.EventLogState{
+		r.Offset = checkpoint.EventLogState{
 			Name:         l.channelName,
 			RecordNumber: r.RecordID,
 			Timestamp:    r.TimeCreated.SystemTime,
@@ -267,7 +266,7 @@ func (l *winEventReader) eventHandles(maxRead int) ([]wineventlog.EvtHandle, int
 	}
 }
 
-func (l *winEventReader) buildRecordFromXML(x []byte, recoveredErr error) (eventlog.Record, error) {
+func (l *winEventReader) buildRecordFromXML(x []byte, recoveredErr error) (eventlog.WinRecord, error) {
 	e, err := sys.UnmarshalEventXML(x)
 	if err != nil {
 		e.RenderErr = append(e.RenderErr, err.Error())
@@ -289,7 +288,7 @@ func (l *winEventReader) buildRecordFromXML(x []byte, recoveredErr error) (event
 		e.Level = wineventlog.EventLevel(e.LevelRaw).String()
 	}
 
-	r := eventlog.Record{
+	r := eventlog.WinRecord{
 		API:   ReaderAPI,
 		Event: e,
 	}
@@ -317,7 +316,7 @@ type ChannelReader struct {
 	lastTime int64
 	internal int64
 	maxRead  int
-	options  []ReaderOptions
+	options  []WinEventOptions
 
 	lock    sync.RWMutex
 	running bool
@@ -328,7 +327,7 @@ type ChannelReader struct {
 	records chan []eventlog.Record // 读取到的事件
 }
 
-func NewChannelReader(name string, lastTime int64, state checkpoint.EventLogState, options ...ReaderOptions) (*ChannelReader, error) {
+func NewChannelReader(name string, lastTime int64, state checkpoint.EventLogState, options ...WinEventOptions) (*ChannelReader, error) {
 	return &ChannelReader{
 		name:     name,
 		state:    state,
@@ -388,7 +387,8 @@ func (c *ChannelReader) run(reader *winEventReader) {
 		}
 
 		var records []eventlog.Record
-		for _, record := range events {
+		for _, event := range events {
+			record := event.(eventlog.WinRecord)
 			if c.state.Timestamp.UnixNano() >= record.TimeCreated.SystemTime.UnixNano() {
 				continue
 			}
@@ -397,6 +397,7 @@ func (c *ChannelReader) run(reader *winEventReader) {
 			c.state.Timestamp = record.TimeCreated.SystemTime
 			c.state.Bookmark = reader.state.Bookmark
 		}
+		events = nil
 		if len(records) == 0 {
 			continue
 		}

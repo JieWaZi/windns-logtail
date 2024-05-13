@@ -38,22 +38,6 @@ func loadConfig(configPath string) (*Config, error) {
 		return nil, err
 	}
 
-	// 支持ftp
-	//if config.FTP.Enable {
-	//	ip := net.ParseIP(config.FTP.RemoteAddr)
-	//	remoteAddr := ""
-	//	if ip.To4() != nil {
-	//		remoteAddr = fmt.Sprintf("%s:%d", config.FTP.RemoteAddr, config.FTP.RemotePort)
-	//	} else if ip.To16() != nil {
-	//		remoteAddr = fmt.Sprintf("[%s]:%d", config.FTP.RemoteAddr, config.FTP.RemotePort)
-	//	}
-	//	ftp := NewFTPConsumer(remoteAddr,
-	//		config.FTP.Username, config.FTP.Password,
-	//		config.FTP.FilePath, config.FTP.FileMaxSize,
-	//		config.FTP.IsSftp, config.FTP.LogFilePrefix)
-	//	ftp.SetPWD(pwd)
-	//	consumers = append(consumers, ftp)
-	//}
 	return config, nil
 }
 
@@ -79,7 +63,7 @@ func (s *Scheduler) Start(service service.Service) error {
 		if err != nil {
 			return err
 		}
-		if err = s.hookConsumer(analytical.Path, config, r); err != nil {
+		if err = s.hookConsumer(analytical, r); err != nil {
 			return err
 		}
 
@@ -91,13 +75,20 @@ func (s *Scheduler) Start(service service.Service) error {
 		if err != nil {
 			return err
 		}
-		if err = s.hookConsumer(audit.Path, config, r); err != nil {
+		if err = s.hookConsumer(audit, r); err != nil {
 			return err
 		}
 
 	}
 
-	s.readeManager.Start()
+	// dns抓包
+	if err := s.addDNSPacket(config.DNSPacket); err != nil {
+		return err
+	}
+
+	if err := s.readeManager.Start(); err != nil {
+		return err
+	}
 	if err := s.consumerManager.Start(); err != nil {
 		return err
 	}
@@ -129,7 +120,7 @@ func (s *Scheduler) addReader(entry Entry, isETL bool) (reader.Reader, error) {
 		maxRead = 10000
 	} else {
 		lastTime := logState.Timestamp.Unix()
-		var options = []reader.ReaderOptions{reader.WithStop()}
+		var options = []reader.WinEventOptions{reader.WithStop()}
 		if entry.Level != "" {
 			options = append(options, reader.WithLevel(entry.Level))
 		}
@@ -149,12 +140,46 @@ func (s *Scheduler) addReader(entry Entry, isETL bool) (reader.Reader, error) {
 	return r, nil
 }
 
-func (s *Scheduler) hookConsumer(name string, config *Config, r reader.Reader) error {
-	if config.SysLog.Enable {
+func (s *Scheduler) addDNSPacket(packet DNSPacket) error {
+	name := "DNSLog" + packet.DeviceName
+	var logState checkpoint.EventLogState
+	if state, ok := s.readeManager.Checkpoint().States()[name]; !ok {
+		logState = checkpoint.EventLogState{
+			Name:      name,
+			Timestamp: time.Now(),
+		}
+		s.readeManager.Checkpoint().PersistState(logState)
+	} else {
+		logState = state
+	}
+
+	var ips []net.IP
+	for _, ipString := range packet.FilterIPS {
+		ip := net.ParseIP(ipString)
+		if ip == nil {
+			logrus.Warnf("parse ip failed %s", ipString)
+		}
+		ips = append(ips, ip)
+	}
+	r := reader.NewDnsPacketReader(packet.DeviceName, ips, logState)
+
+	if err := s.readeManager.AddReader(r, 1000, 30); err != nil {
+		return err
+	}
+
+	if err := s.hookConsumer(Entry{Path: name, SysLog: packet.SysLog, FTP: packet.FTP}, r); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Scheduler) hookConsumer(entry Entry, r reader.Reader) error {
+	if entry.SysLog.Enable {
 		var consumerState checkpoint.EventLogState
-		if state, ok := s.consumerManager.Checkpoint().States()[name]; !ok {
+		if state, ok := s.consumerManager.Checkpoint().States()[entry.Path]; !ok {
 			consumerState = checkpoint.EventLogState{
-				Name:      name,
+				Name:      entry.Path,
 				Timestamp: time.Now(),
 			}
 			s.consumerManager.Checkpoint().PersistState(consumerState)
@@ -162,20 +187,45 @@ func (s *Scheduler) hookConsumer(name string, config *Config, r reader.Reader) e
 			consumerState = state
 		}
 
-		ip := net.ParseIP(config.SysLog.RemoteAddr)
+		ip := net.ParseIP(entry.SysLog.RemoteAddr)
+		if ip == nil {
+			return errors.New("invalid remote addr")
+		}
 		remoteAddr := ""
 		if ip.To4() != nil {
-			remoteAddr = fmt.Sprintf("%s:%d", config.SysLog.RemoteAddr, config.SysLog.RemotePort)
+			remoteAddr = fmt.Sprintf("%s:%d", entry.SysLog.RemoteAddr, entry.SysLog.RemotePort)
 		} else if ip.To16() != nil {
-			remoteAddr = fmt.Sprintf("[%s]:%d", config.SysLog.RemoteAddr, config.SysLog.RemotePort)
+			remoteAddr = fmt.Sprintf("[%s]:%d", entry.SysLog.RemoteAddr, entry.SysLog.RemotePort)
 		} else {
 			return errors.New("invalid remote addr")
 		}
-		syslog, err := consumer.NewSysLogConsumer(name, s.pwd, remoteAddr, config.SysLog.Network, consumerState)
+		syslog, err := consumer.NewSysLogConsumer(entry.Path, s.pwd, remoteAddr, entry.SysLog.Network, consumerState)
 		if err != nil {
 			return err
 		}
 		s.consumerManager.AddConsumer(syslog, r.GetRecords())
+	}
+
+	// 支持ftp
+	if entry.FTP.Enable {
+		ip := net.ParseIP(entry.FTP.RemoteAddr)
+		if ip == nil {
+			return errors.New("invalid remote addr")
+		}
+		remoteAddr := ""
+		if ip.To4() != nil {
+			remoteAddr = fmt.Sprintf("%s:%d", entry.FTP.RemoteAddr, entry.FTP.RemotePort)
+		} else if ip.To16() != nil {
+			remoteAddr = fmt.Sprintf("[%s]:%d", entry.FTP.RemoteAddr, entry.FTP.RemotePort)
+		}
+		if entry.FTP.FileMaxSize <= 0 {
+			entry.FTP.FileMaxSize = 10
+		}
+		ftp := consumer.NewFTPConsumer(remoteAddr,
+			entry.FTP.Username, entry.FTP.Password,
+			entry.FTP.FilePath, entry.FTP.FileMaxSize,
+			entry.FTP.IsSftp, entry.FTP.LogFilePrefix)
+		s.consumerManager.AddConsumer(ftp, r.GetRecords())
 	}
 
 	return nil

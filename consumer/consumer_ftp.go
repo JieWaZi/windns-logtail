@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/elastic/beats/winlogbeat/eventlog"
 	"github.com/jlaffaye/ftp"
 	"github.com/pkg/sftp"
 	"github.com/sirupsen/logrus"
@@ -17,6 +16,7 @@ import (
 	"sync"
 	"time"
 	"windns-logtail/checkpoint"
+	"windns-logtail/eventlog"
 )
 
 type FTP struct {
@@ -81,7 +81,7 @@ func (f *FTP) HandleEvents(events []eventlog.Record) error {
 			logrus.Errorln("json marshal err: ", err.Error())
 			return err
 		}
-		systemTime := record.TimeCreated.SystemTime
+		systemTime := record.Timestamp()
 		_, err = archiveFile.WriteString(string(data))
 		_, _ = archiveFile.WriteString("\n")
 		if err != nil {
@@ -115,7 +115,8 @@ func (f *FTP) HandleEvents(events []eventlog.Record) error {
 	// 每次检查一下备份日志文件里面有没有需要上传的文件
 	go f.checkArchiveLog()
 
-	logrus.Infof("finish to save event log to %s, total event log is %d, last event log time is %s\n", ArchiveLog, len(events), f.state.Timestamp)
+	logrus.Infof("finish to save eventlog log to %s, total eventlog log is %d, last eventlog log time is %s\n", ArchiveLog, len(events), f.state.Timestamp)
+	events = nil
 	return nil
 
 }

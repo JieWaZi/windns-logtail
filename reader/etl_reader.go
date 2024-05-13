@@ -11,8 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"windns-logtail/checkpoint"
+	"windns-logtail/eventlog"
 
-	"github.com/elastic/beats/winlogbeat/eventlog"
 	"github.com/pkg/errors"
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
@@ -335,14 +335,14 @@ func (w *ETL) scanXML() {
 						continue
 					}
 				}
-				deltaEvents = append(deltaEvents, eventlog.Record{Event: event.Event})
+				deltaEvents = append(deltaEvents, eventlog.WinRecord{Event: event.Event})
 			}
 
 			// 处理完了需要删除文件
 			if err := os.RemoveAll(events.ID); err != nil {
 				logrus.Errorf("rm %s err: %s", events.ID, err.Error())
 			}
-			logrus.Infof("%s total event is %d, add %d deltaEvents to channel", events.ID, len(events.EventLogs), len(deltaEvents))
+			logrus.Infof("%s total eventlog is %d, add %d deltaEvents to channel", events.ID, len(events.EventLogs), len(deltaEvents))
 			events = nil
 
 			if len(deltaEvents) == 0 {
@@ -357,7 +357,7 @@ func (w *ETL) scanXML() {
 				hashStr := hex.EncodeToString(hash[:])
 				w.state = checkpoint.EventLogState{
 					Name:      w.logPath,
-					Timestamp: records[len(records)-1].TimeCreated.SystemTime,
+					Timestamp: records[len(records)-1].Timestamp(),
 					MD5:       hashStr,
 				}
 				w.point.PersistState(w.state)

@@ -1,12 +1,12 @@
 package consumer
 
 import (
-	"github.com/elastic/beats/winlogbeat/eventlog"
 	"github.com/panjf2000/ants/v2"
 	"github.com/sirupsen/logrus"
 	"path/filepath"
 	"time"
 	"windns-logtail/checkpoint"
+	"windns-logtail/eventlog"
 )
 
 // dns查询日志的时间格式
