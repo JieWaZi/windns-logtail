@@ -17,7 +17,7 @@ const (
 	// 记录上一次同步最新的日志时间
 	FTPLastTime = "ftp-last-time.txt"
 	// 备份日志路径
-	ArchiveLogPath = "archiveLog"
+	ArchiveLogPath = "archive-log"
 	// 备份日志名称
 	ArchiveLog = "archive-dns-analytical.log"
 	// 事件检查点

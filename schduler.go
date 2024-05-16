@@ -221,10 +221,13 @@ func (s *Scheduler) hookConsumer(entry Entry, r reader.Reader) error {
 		if entry.FTP.FileMaxSize <= 0 {
 			entry.FTP.FileMaxSize = 10
 		}
-		ftp := consumer.NewFTPConsumer(remoteAddr,
+		ftp, err := consumer.NewFTPConsumer(s.pwd, remoteAddr,
 			entry.FTP.Username, entry.FTP.Password,
 			entry.FTP.FilePath, entry.FTP.FileMaxSize,
 			entry.FTP.IsSftp, entry.FTP.LogFilePrefix)
+		if err != nil {
+			return err
+		}
 		s.consumerManager.AddConsumer(ftp, r.GetRecords())
 	}
 

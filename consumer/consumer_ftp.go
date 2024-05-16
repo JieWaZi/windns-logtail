@@ -3,7 +3,6 @@ package consumer
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"github.com/jlaffaye/ftp"
 	"github.com/pkg/sftp"
@@ -13,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"sync"
 	"time"
 	"windns-logtail/checkpoint"
@@ -44,9 +44,16 @@ type FTP struct {
 	lock sync.RWMutex
 }
 
-func NewFTPConsumer(remoteAddr, username, password, filePath string,
-	fileMaxSize int64, isSftp bool, logFilePrefix string) *FTP {
+func NewFTPConsumer(pwd, remoteAddr, username, password, filePath string,
+	fileMaxSize int64, isSftp bool, logFilePrefix string) (*FTP, error) {
+	if !exists(filepath.Join(pwd, ArchiveLogPath)) {
+		if err := os.Mkdir(filepath.Join(pwd, ArchiveLogPath), 0666); err != nil {
+			return nil, err
+		}
+	}
+
 	return &FTP{
+		pwd:           pwd,
 		remoteAddr:    remoteAddr,
 		username:      username,
 		password:      password,
@@ -55,7 +62,7 @@ func NewFTPConsumer(remoteAddr, username, password, filePath string,
 		isSftp:        isSftp,
 		logFilePrefix: logFilePrefix,
 		lock:          sync.RWMutex{},
-	}
+	}, nil
 }
 
 func (f *FTP) Name() string {
@@ -76,13 +83,8 @@ func (f *FTP) HandleEvents(events []eventlog.Record) error {
 	defer archiveFile.Close()
 
 	for _, record := range events {
-		data, err := json.Marshal(record)
-		if err != nil {
-			logrus.Errorln("json marshal err: ", err.Error())
-			return err
-		}
 		systemTime := record.Timestamp()
-		_, err = archiveFile.WriteString(string(data))
+		_, err = archiveFile.WriteString(record.String())
 		_, _ = archiveFile.WriteString("\n")
 		if err != nil {
 			logrus.Errorln("backup log file write err: ", err.Error())
@@ -141,6 +143,19 @@ func (f *FTP) checkArchiveLog() error {
 
 	if len(files) == 0 {
 		return nil
+	}
+
+	// 最多保留10个文件
+	if len(files) > 10 {
+		sort.Slice(files, func(i, j int) bool {
+			return files[i].ModTime().Before(files[j].ModTime())
+		})
+		removeFiles := files[:len(files)-10]
+		files = files[len(files)-10:]
+		for _, file := range removeFiles {
+			archiveFile := filepath.Join(f.pwd, ArchiveLogPath, file.Name())
+			_ = os.Remove(archiveFile)
+		}
 	}
 
 	if f.isSftp {
@@ -225,6 +240,17 @@ func (f *FTP) checkArchiveLog() error {
 		}
 	}
 	return nil
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path) //os.Stat获取文件信息
+	if err != nil {
+		if os.IsExist(err) {
+			return true
+		}
+		return false
+	}
+	return true
 }
 
 // 根据path的格式来判断拼接方式

@@ -41,3 +41,18 @@ dns_packet:
     remote_port:
     # 使用的网络协议（tcp/udp）
     network:
+  ftp:
+    # 是否启用(true/false)
+    enable: true
+    # ftp服务器地址
+    remote_addr:
+    # ftp服务器端口
+    remote_port: 22
+    # ftp账号
+    username:
+    # ftp密码
+    password:
+    file_path:
+    file_max_size: 10
+    is_sftp: false
+    log_file_prefix:
