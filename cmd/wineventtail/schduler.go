@@ -1,15 +1,16 @@
 package main
 
 import (
+	"dns-logtail/checkpoint"
+	"dns-logtail/consumer"
+	"dns-logtail/global"
+	"dns-logtail/reader"
 	"errors"
 	"fmt"
 	"github.com/kardianos/service"
 	"github.com/sirupsen/logrus"
 	"net"
 	"time"
-	"windns-logtail/checkpoint"
-	"windns-logtail/consumer"
-	"windns-logtail/reader"
 )
 
 type Scheduler struct {
@@ -31,8 +32,8 @@ func NewScheduler(pwd, configPath string) (*Scheduler, error) {
 		configPath: configPath,
 	}, nil
 }
-func loadConfig(configPath string) (*Config, error) {
-	config, err := LoadConfig(configPath)
+func loadConfig(configPath string) (*global.Config, error) {
+	config, err := global.LoadConfig(configPath)
 	if err != nil {
 		logrus.Errorf("init config err: %s", err.Error())
 		return nil, err
@@ -82,8 +83,10 @@ func (s *Scheduler) Start(service service.Service) error {
 	}
 
 	// dns抓包
-	if err := s.addDNSPacket(config.DNSPacket); err != nil {
-		return err
+	for _, packet := range config.DNSPackets {
+		if err := s.addDNSPacket(packet); err != nil {
+			return err
+		}
 	}
 
 	if err := s.readeManager.Start(); err != nil {
@@ -96,7 +99,7 @@ func (s *Scheduler) Start(service service.Service) error {
 	return nil
 }
 
-func (s *Scheduler) addReader(entry Entry, isETL bool) (reader.Reader, error) {
+func (s *Scheduler) addReader(entry global.Entry, isETL bool) (reader.Reader, error) {
 	var logState checkpoint.EventLogState
 	if state, ok := s.readeManager.Checkpoint().States()[entry.Path]; !ok {
 		logState = checkpoint.EventLogState{
@@ -140,41 +143,43 @@ func (s *Scheduler) addReader(entry Entry, isETL bool) (reader.Reader, error) {
 	return r, nil
 }
 
-func (s *Scheduler) addDNSPacket(packet DNSPacket) error {
-	name := "DNSLog" + packet.DeviceName
-	var logState checkpoint.EventLogState
-	if state, ok := s.readeManager.Checkpoint().States()[name]; !ok {
-		logState = checkpoint.EventLogState{
-			Name:      name,
-			Timestamp: time.Now(),
+func (s *Scheduler) addDNSPacket(packet global.DNSPacket) error {
+	for _, deviceName := range packet.DeviceName {
+		name := "DNSLog" + deviceName
+		var logState checkpoint.EventLogState
+		if state, ok := s.readeManager.Checkpoint().States()[name]; !ok {
+			logState = checkpoint.EventLogState{
+				Name:      name,
+				Timestamp: time.Now(),
+			}
+			s.readeManager.Checkpoint().PersistState(logState)
+		} else {
+			logState = state
 		}
-		s.readeManager.Checkpoint().PersistState(logState)
-	} else {
-		logState = state
-	}
 
-	var ips []net.IP
-	for _, ipString := range packet.FilterIPS {
-		ip := net.ParseIP(ipString)
-		if ip == nil {
-			logrus.Warnf("parse ip failed %s", ipString)
+		var ips []net.IP
+		for _, ipString := range packet.FilterIPS {
+			ip := net.ParseIP(ipString)
+			if ip == nil {
+				logrus.Warnf("parse ip failed %s", ipString)
+			}
+			ips = append(ips, ip)
 		}
-		ips = append(ips, ip)
-	}
-	r := reader.NewDnsPacketReader(packet.DeviceName, ips, logState)
+		r := reader.NewDnsPacketReader(deviceName, ips, logState)
 
-	if err := s.readeManager.AddReader(r, 1000, 30); err != nil {
-		return err
-	}
+		if err := s.readeManager.AddReader(r, 1000, 1); err != nil {
+			return err
+		}
 
-	if err := s.hookConsumer(Entry{Path: name, SysLog: packet.SysLog, FTP: packet.FTP}, r); err != nil {
-		return err
+		if err := s.hookConsumer(global.Entry{Path: name, SysLog: packet.SysLog, FTP: packet.FTP, LogFormat: packet.LogFormat}, r); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func (s *Scheduler) hookConsumer(entry Entry, r reader.Reader) error {
+func (s *Scheduler) hookConsumer(entry global.Entry, r reader.Reader) error {
 	if entry.SysLog.Enable {
 		var consumerState checkpoint.EventLogState
 		if state, ok := s.consumerManager.Checkpoint().States()[entry.Path]; !ok {
@@ -199,11 +204,11 @@ func (s *Scheduler) hookConsumer(entry Entry, r reader.Reader) error {
 		} else {
 			return errors.New("invalid remote addr")
 		}
-		syslog, err := consumer.NewSysLogConsumer(entry.Path, s.pwd, remoteAddr, entry.SysLog.Network, consumerState)
+		syslog, err := consumer.NewSysLogConsumer(entry.Path, s.pwd, remoteAddr, entry.SysLog.Network, entry.LogFormat, consumerState)
 		if err != nil {
 			return err
 		}
-		s.consumerManager.AddConsumer(syslog, r.GetRecords())
+		s.consumerManager.AddConsumer(entry.Path, syslog, r.GetRecords())
 	}
 
 	// 支持ftp
@@ -221,14 +226,14 @@ func (s *Scheduler) hookConsumer(entry Entry, r reader.Reader) error {
 		if entry.FTP.FileMaxSize <= 0 {
 			entry.FTP.FileMaxSize = 10
 		}
-		ftp, err := consumer.NewFTPConsumer(s.pwd, remoteAddr,
+		ftp, err := consumer.NewFTPConsumer(entry.Path, s.pwd, remoteAddr,
 			entry.FTP.Username, entry.FTP.Password,
 			entry.FTP.FilePath, entry.FTP.FileMaxSize,
-			entry.FTP.IsSftp, entry.FTP.LogFilePrefix)
+			entry.FTP.IsSftp, entry.FTP.LogFilePrefix, entry.LogFormat)
 		if err != nil {
 			return err
 		}
-		s.consumerManager.AddConsumer(ftp, r.GetRecords())
+		s.consumerManager.AddConsumer(entry.Path, ftp, r.GetRecords())
 	}
 
 	return nil

@@ -3,6 +3,9 @@ package consumer
 import (
 	"archive/zip"
 	"bytes"
+	"dns-logtail/checkpoint"
+	"dns-logtail/eventlog"
+	"encoding/json"
 	"fmt"
 	"github.com/jlaffaye/ftp"
 	"github.com/pkg/sftp"
@@ -15,8 +18,6 @@ import (
 	"sort"
 	"sync"
 	"time"
-	"windns-logtail/checkpoint"
-	"windns-logtail/eventlog"
 )
 
 type FTP struct {
@@ -35,6 +36,8 @@ type FTP struct {
 	isSftp bool
 	// 文件归档前缀
 	logFilePrefix string
+	// 日志格式
+	logFormat string
 
 	pwd string
 
@@ -44,8 +47,8 @@ type FTP struct {
 	lock sync.RWMutex
 }
 
-func NewFTPConsumer(pwd, remoteAddr, username, password, filePath string,
-	fileMaxSize int64, isSftp bool, logFilePrefix string) (*FTP, error) {
+func NewFTPConsumer(name, pwd, remoteAddr, username, password, filePath string,
+	fileMaxSize int64, isSftp bool, logFilePrefix, logFormat string) (*FTP, error) {
 	if !exists(filepath.Join(pwd, ArchiveLogPath)) {
 		if err := os.Mkdir(filepath.Join(pwd, ArchiveLogPath), 0666); err != nil {
 			return nil, err
@@ -53,6 +56,7 @@ func NewFTPConsumer(pwd, remoteAddr, username, password, filePath string,
 	}
 
 	return &FTP{
+		name:          name,
 		pwd:           pwd,
 		remoteAddr:    remoteAddr,
 		username:      username,
@@ -61,6 +65,7 @@ func NewFTPConsumer(pwd, remoteAddr, username, password, filePath string,
 		fileMaxSize:   fileMaxSize,
 		isSftp:        isSftp,
 		logFilePrefix: logFilePrefix,
+		logFormat:     logFormat,
 		lock:          sync.RWMutex{},
 	}, nil
 }
@@ -84,11 +89,14 @@ func (f *FTP) HandleEvents(events []eventlog.Record) error {
 
 	for _, record := range events {
 		systemTime := record.Timestamp()
-		_, err = archiveFile.WriteString(record.String())
-		_, _ = archiveFile.WriteString("\n")
+		if f.logFormat == "json" {
+			data, _ := json.Marshal(record)
+			_, err = archiveFile.WriteString(string(data) + "\n")
+		} else {
+			_, err = archiveFile.WriteString(record.String() + "\n")
+		}
 		if err != nil {
 			logrus.Errorln("backup log file write err: ", err.Error())
-			return err
 		}
 		// 成功后更新最新一条的日志时间
 		if f.state.Timestamp.UnixNano() < systemTime.UnixNano() {

@@ -1,21 +1,17 @@
 package consumer
 
 import (
+	"dns-logtail/checkpoint"
+	"dns-logtail/eventlog"
 	"github.com/panjf2000/ants/v2"
 	"github.com/sirupsen/logrus"
 	"path/filepath"
+	"sync"
 	"time"
-	"windns-logtail/checkpoint"
-	"windns-logtail/eventlog"
 )
 
 // dns查询日志的时间格式
 const (
-	WindowSystemLayout = "2006-01-02T15:04:05.000000000"
-	// 记录上一次同步最新的日志时间
-	SysLogLastTime = "syslog-last-time.txt"
-	// 记录上一次同步最新的日志时间
-	FTPLastTime = "ftp-last-time.txt"
 	// 备份日志路径
 	ArchiveLogPath = "archive-log"
 	// 备份日志名称
@@ -32,8 +28,8 @@ type Consumer interface {
 }
 
 type consumeBinder struct {
-	consume Consumer
-	events  chan []eventlog.Record
+	consumes []Consumer
+	events   chan []eventlog.Record
 }
 
 type Manager struct {
@@ -65,18 +61,23 @@ func (m *Manager) Checkpoint() *checkpoint.Checkpoint {
 	return m.point
 }
 
-func (m *Manager) AddConsumer(consumer Consumer, events chan []eventlog.Record) {
+func (m *Manager) AddConsumer(topic string, consumer Consumer, events chan []eventlog.Record) {
 	consumer.SetPoint(m.point)
-	m.consumers[consumer.Name()] = consumeBinder{
-		consume: consumer,
-		events:  events,
+	if binder, ok := m.consumers[topic]; ok {
+		binder.consumes = append(binder.consumes, consumer)
+		m.consumers[topic] = binder
+	} else {
+		m.consumers[topic] = consumeBinder{
+			consumes: []Consumer{consumer},
+			events:   events,
+		}
 	}
-	m.stopChan[consumer.Name()] = make(chan struct{})
+
+	m.stopChan[topic] = make(chan struct{}, 1)
 }
 
 func (m *Manager) Start() error {
 	for topic, binder := range m.consumers {
-		m.stopChan[topic] = make(chan struct{})
 		err := m.pool.Submit(func(topic string, binder consumeBinder) func() {
 			return func() {
 				logrus.Infof("start consume topic: %s", topic)
@@ -85,9 +86,17 @@ func (m *Manager) Start() error {
 					case <-m.stopChan[topic]:
 						break
 					case events := <-binder.events:
-						if err := binder.consume.HandleEvents(events); err != nil {
-							logrus.Errorln("handle events err: ", err.Error())
+						var wg = &sync.WaitGroup{}
+						wg.Add(len(binder.consumes))
+						for _, consume := range binder.consumes {
+							go func(consume Consumer, events []eventlog.Record) {
+								defer wg.Done()
+								if err := consume.HandleEvents(events); err != nil {
+									logrus.Errorln("handle events err: ", err.Error())
+								}
+							}(consume, events)
 						}
+						wg.Wait()
 					}
 				}
 			}
@@ -101,7 +110,9 @@ func (m *Manager) Start() error {
 
 func (m *Manager) Shutdown() {
 	for topic, binder := range m.consumers {
-		binder.consume.Shutdown()
+		for _, consume := range binder.consumes {
+			go consume.Shutdown()
+		}
 		m.stopChan[topic] <- struct{}{}
 		close(m.stopChan[topic])
 	}

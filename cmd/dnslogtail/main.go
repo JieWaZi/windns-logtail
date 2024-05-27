@@ -4,7 +4,12 @@ import (
 	"flag"
 	"github.com/kardianos/service"
 	"github.com/sirupsen/logrus"
+	"os"
 	"path/filepath"
+)
+
+const (
+	confPath = "/etc/dnslogtail/dnslogtail.yml"
 )
 
 var (
@@ -14,28 +19,35 @@ var (
 
 func init() {
 	flag.StringVar(&serviceParam, "service", "", "Control the system service.")
-	flag.StringVar(&confFile, "conf", ConfigName, "Control the system service.")
+	flag.StringVar(&confFile, "conf", confPath, "Service config path")
 }
 
 func main() {
 	flag.Parse()
 
-	// 获取安装路径
-	installationPath := getCurrentAbPath()
+	libPath := os.Getenv("LD_LIBRARY_PATH")
+	if libPath == "" {
+		libPath = "/usr/local/lib:/usr/lib"
+	}
 
 	serviceConfig := &service.Config{
-		Name:        "Windows-Log-Service",
-		DisplayName: "Windows Log Service",
-		Description: "Windows Log Service是一个Windows服务增强插件，提供Windows日志上传备份功能，" +
-			"支持通过Syslog、FTP和SFTP方式将Windows日志上传至外部日志服务器，方便管理员运维",
+		Name:        "dnslogtail",
+		DisplayName: "DNS Log Tail",
+		Description: "DNS Log Tail是一个DNS解析日志抓包工具，提供DNS解析日志上传备份功能，" +
+			"支持通过Syslog、FTP和SFTP方式将日志上传至外部日志服务器，方便管理员运维",
 		Option: map[string]interface{}{
 			// 开机自启动
 			"DelayedAutoStart": true,
 		},
 		// 设置配置文件路径
-		Arguments: []string{"-conf", filepath.Join(installationPath, ConfigName)},
+		Arguments: []string{"-conf", confFile},
+		// 设置环境变量
+		EnvVars: map[string]string{
+			"LD_LIBRARY_PATH": libPath,
+		},
 	}
-	scheduler, err := NewScheduler(installationPath, confFile)
+
+	scheduler, err := NewScheduler(filepath.Dir(confFile), confFile)
 	if err != nil {
 		panic(err)
 	}

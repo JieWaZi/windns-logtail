@@ -1,3 +1,7 @@
 .idea
 DS_Store
-windns-logtail*
+cmd/wineventtail/wineventtail.exe
+cmd/dnslogtail/dnslogtail
+deploy/linux/arm64
+deploy/linux/amd64
+deploy/windows/amd64

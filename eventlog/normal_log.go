@@ -2,6 +2,7 @@ package eventlog
 
 import (
 	"bytes"
+	"dns-logtail/checkpoint"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-	"windns-logtail/checkpoint"
 )
 
 type WinRecord struct {

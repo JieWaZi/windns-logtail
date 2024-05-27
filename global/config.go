@@ -1,4 +1,4 @@
-package main
+package global
 
 import (
 	"github.com/sirupsen/logrus"
@@ -13,9 +13,7 @@ import (
 
 const (
 	// 配置名称
-	ConfigName = "win-logtail.yml"
-	// 备份日志路径
-	ArchiveLogPath = "archiveLog"
+	WinConfigName = "win-logtail.yml"
 	// 日志文件
 	AnalyticalLog = "win-logtail.log"
 )
@@ -28,7 +26,7 @@ type Config struct {
 	// audit类型文件
 	AuditEntries []Entry `yaml:"audit_entries"`
 	// dns抓包日志
-	DNSPacket DNSPacket `yaml:"dns_packet"`
+	DNSPackets []DNSPacket `yaml:"dns_packets"`
 }
 
 type Entry struct {
@@ -42,6 +40,8 @@ type Entry struct {
 	EventID string `yaml:"event_id"`
 	// etl文件转换并发数
 	TransferThreads int `yaml:"transfer_threads"`
+	// 日志格式
+	LogFormat string `yaml:"log_format"`
 
 	// syslog服务器配置
 	SysLog SysLogConfig `yaml:"syslog"`
@@ -53,9 +53,11 @@ type DNSPacket struct {
 	// 是否启用
 	Enable bool `yaml:"enable"`
 	// 网卡名称
-	DeviceName string `yaml:"device_name"`
+	DeviceName []string `yaml:"device_name"`
 	// 过滤IP
 	FilterIPS []string `yaml:"filter_ips"`
+	// 日志格式
+	LogFormat string `yaml:"log_format"`
 
 	SysLog SysLogConfig `yaml:"syslog"`
 	FTP    FTPConfig    `yaml:"ftp"`
@@ -104,16 +106,14 @@ func LoadConfig(filename string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	installationPath := getCurrentAbPath()
+	installationPath := filepath.Dir(filename)
 
 	InitLogger(filepath.Join(installationPath, AnalyticalLog), logrus.InfoLevel.String(), false, false)
-
 	return &config, nil
 }
 
 // 获取安装的路径，对于window使用pwd得到的不一定是安装路径，而是C:\Window\System32
-func getCurrentAbPath() string {
+func GetCurrentAbPath() string {
 	dir := getCurrentAbPathByExecutable()
 	tmpDir, _ := filepath.EvalSymlinks(os.TempDir())
 	if strings.Contains(dir, tmpDir) {

@@ -1,10 +1,9 @@
 package reader
 
 import (
-	"encoding/xml"
-	"windns-logtail/checkpoint"
-	"windns-logtail/eventlog"
-
+	"dns-logtail/checkpoint"
+	"dns-logtail/eventlog"
+	"github.com/pkg/errors"
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
 	"path/filepath"
@@ -20,12 +19,6 @@ type Reader interface {
 	SetMaxRead(maxRead int)
 	SetPoint(point *checkpoint.Checkpoint)
 	GetRecords() chan []eventlog.Record
-}
-
-type Events struct {
-	ID        string               `xml:"-" json:"-"`
-	XMLName   xml.Name             `xml:"Events" json:"-"`
-	EventLogs []eventlog.WinRecord `xml:"Event" json:"EventLogs"`
 }
 
 type Manager struct {
@@ -64,6 +57,9 @@ func (m *Manager) Checkpoint() *checkpoint.Checkpoint {
 }
 
 func (m *Manager) Start() error {
+	if len(m.Readers) == 0 {
+		return errors.New("no reader")
+	}
 	m.cron.Start()
 
 	return nil

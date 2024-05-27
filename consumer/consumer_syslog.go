@@ -2,6 +2,9 @@ package consumer
 
 import (
 	"crypto/tls"
+	"dns-logtail/checkpoint"
+	"dns-logtail/eventlog"
+	"encoding/json"
 	"fmt"
 	syslog "github.com/NextronSystems/simplesyslog"
 	"github.com/panjf2000/ants/v2"
@@ -9,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"windns-logtail/checkpoint"
-	"windns-logtail/eventlog"
 )
 
 type Syslog struct {
@@ -20,6 +21,8 @@ type Syslog struct {
 	remoteAddr string
 	// 网络协议(tcp/udp)
 	network string
+	// 日志格式
+	logFormat string
 	// 最近一次写入的状态
 	state checkpoint.EventLogState
 	point *checkpoint.Checkpoint
@@ -28,7 +31,7 @@ type Syslog struct {
 	wg *sync.WaitGroup
 }
 
-func NewSysLogConsumer(name, pwd, remoteAddr, network string, state checkpoint.EventLogState) (*Syslog, error) {
+func NewSysLogConsumer(name, pwd, remoteAddr, network, logFormat string, state checkpoint.EventLogState) (*Syslog, error) {
 	pool, err := ants.NewPool(100, ants.WithPreAlloc(true))
 	if err != nil {
 		return nil, err
@@ -38,6 +41,7 @@ func NewSysLogConsumer(name, pwd, remoteAddr, network string, state checkpoint.E
 		pwd:        pwd,
 		remoteAddr: remoteAddr,
 		network:    network,
+		logFormat:  logFormat,
 		state:      state,
 		pool:       pool,
 		wg:         &sync.WaitGroup{},
@@ -109,7 +113,12 @@ func (s *Syslog) batchSend(records []eventlog.Record) error {
 				if s.state.Timestamp.UnixNano() >= record.Timestamp().UnixNano() {
 					return
 				}
-				_ = send(client, string(record.String())+"\n", syslog.LOG_INFO)
+				if s.logFormat == "json" {
+					data, _ := json.Marshal(record)
+					_ = send(client, string(data)+"\n", syslog.LOG_INFO)
+				} else {
+					_ = send(client, string(record.String())+"\n", syslog.LOG_INFO)
+				}
 			}
 		}(record))
 		if err != nil {
@@ -136,7 +145,7 @@ func send(client *syslog.Client, message string, priority syslog.Priority) error
 			header = fmt.Sprintf("<%d>%s %s", int(priority), timestamp, client.Hostname)
 		}
 		if err := client.SendRaw(fmt.Sprintf("%s %s", header, message)); err != nil {
-			logrus.Errorf("send eventlog log to syslog server err: %s", err.Error())
+			logrus.Errorf("send %s to syslog server err: %s", message, err.Error())
 		}
 		done <- struct{}{}
 	}()
@@ -146,6 +155,7 @@ func send(client *syslog.Client, message string, priority syslog.Priority) error
 		timer.Stop()
 		return nil
 	case <-timer.C:
+		logrus.Errorf("send %s to syslog server timeout", message)
 		return nil
 	}
 }

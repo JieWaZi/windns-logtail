@@ -1,4 +1,4 @@
-module windns-logtail
+module dns-logtail
 
 go 1.19
 

@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"container/list"
 	"crypto/md5"
+	"dns-logtail/checkpoint"
+	"dns-logtail/eventlog"
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"github.com/panjf2000/ants/v2"
 	"sync"
 	"sync/atomic"
-	"windns-logtail/checkpoint"
-	"windns-logtail/eventlog"
 
 	"github.com/pkg/errors"
 	"github.com/robfig/cron/v3"
@@ -30,9 +30,13 @@ const (
 	TracerptExe = "tracerpt.exe"
 	// powershell命令
 	Powershell = "powershell.exe"
-	// dns查询日志的时间格式
-	WindowSystemLayout = "2006-01-02T15:04:05.000000000"
 )
+
+type Events struct {
+	ID        string               `xml:"-" json:"-"`
+	XMLName   xml.Name             `xml:"Events" json:"-"`
+	EventLogs []eventlog.WinRecord `xml:"Event" json:"EventLogs"`
+}
 
 type ETL struct {
 	logPath string
@@ -374,6 +378,7 @@ func (w *ETL) scanXML() {
 }
 
 func (w *ETL) Shutdown() {
+	logrus.Infof("stop %s etl reader", w.logPath)
 	w.stop = true
 	w.stopReadXML <- struct{}{}
 	w.stopTransferETL <- struct{}{}

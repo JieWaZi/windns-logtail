@@ -1,6 +1,8 @@
 package reader
 
 import (
+	"dns-logtail/checkpoint"
+	"dns-logtail/eventlog"
 	"fmt"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -12,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"windns-logtail/checkpoint"
-	"windns-logtail/eventlog"
 )
 
 const (
@@ -45,13 +45,14 @@ func NewDnsPacketReader(deviceName string, filterIPs []net.IP, state checkpoint.
 		deviceName: deviceName,
 		filterIPs:  filterIPs,
 		records:    make(chan []eventlog.Record, 10000),
-		stopChan:   make(chan struct{}),
+		stopChan:   make(chan struct{}, 1),
 		lock:       sync.RWMutex{},
 		state:      state,
 	}
 }
 
 func (r *DnsPacketReader) Init() error {
+	fmt.Println("init dns packet reader")
 	handle, err := pcap.OpenLive(r.deviceName, snapshotLen, promiscuous, timeout)
 	if err != nil {
 		logrus.Errorf("open pcap device %s failed %s", r.deviceName, err)
@@ -67,6 +68,7 @@ func (r *DnsPacketReader) Init() error {
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	r.source = packetSource
+	fmt.Println("finish init dns packet reader")
 	return nil
 }
 
@@ -77,7 +79,6 @@ func (r *DnsPacketReader) Run() {
 		r.running = true
 	}
 	ticker := time.NewTicker(time.Second)
-
 	for {
 		select {
 		case p, ok := <-r.source.Packets():
@@ -110,6 +111,7 @@ func (r *DnsPacketReader) Run() {
 }
 
 func (r *DnsPacketReader) Shutdown() {
+	logrus.Info("stop dns packet reader")
 	r.handle.Close()
 	r.stopChan <- struct{}{}
 	close(r.records)

@@ -1,6 +1,8 @@
 package reader
 
 import (
+	"dns-logtail/checkpoint"
+	"dns-logtail/eventlog"
 	"fmt"
 	"github.com/elastic/beats/winlogbeat/sys"
 	"github.com/elastic/beats/winlogbeat/sys/wineventlog"
@@ -13,8 +15,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"windns-logtail/checkpoint"
-	"windns-logtail/eventlog"
 )
 
 const (
@@ -425,10 +425,10 @@ func (c *ChannelReader) GetRecords() chan []eventlog.Record {
 	return c.records
 }
 func (c *ChannelReader) Shutdown() {
+	logrus.Infof("stop %s channel reader", c.name)
 	c.point.Shutdown()
 	c.running = false
 	close(c.records)
-	logrus.Infof("%s channel reader shutdown....", c.name)
 }
 
 func (c *ChannelReader) SetPoint(point *checkpoint.Checkpoint) {
